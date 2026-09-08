@@ -1,0 +1,3 @@
+- insert:
+    - id: mobile-remote
+      name: '@muzermat/dsh-mobile-remote'
