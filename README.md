@@ -25,7 +25,7 @@ npm run build
 npm pack
 ```
 
-使用**桌面应用实际使用的 DSH_HOME 和 web profile**执行 Harness 原生命令。下面的 `dsh` 应为该应用对应的 rc.6 CLI；不要另启一个业务 Host。
+使用**桌面应用实际使用的 DSH_HOME 和 web profile**执行 Harness 原生命令。原生插件管理需要 PATH 中可用的 pnpm（测试使用 11.19.0）。下面的 `dsh` 应为该应用对应的 rc.6 CLI；不要另启一个业务 Host。
 
 ```sh
 dsh plugin --profile web add /absolute/path/muzermat-dsh-mobile-remote-0.1.0.tgz
