@@ -13,6 +13,8 @@ jobs:
       - run: npm test
       - run: npm run test:host
       - run: npm run test:native
+      - run: npm run test:interactions
       - run: npm run test:gateway
       - run: npm run test:relay
+      - run: npm run test:package
       - run: npm pack --dry-run

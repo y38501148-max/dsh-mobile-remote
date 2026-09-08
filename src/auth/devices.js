@@ -8,14 +8,23 @@ export function check(condition, code, status) {
   if (!condition) throw new ProtocolError(code, status)
 }
 
-// Process-scoped preview: restarting the plugin invalidates every credential.
+// Credentials survive Host restarts, but expire independently of browser cookies.
 export class Devices {
   #invitations = new Map()
   #devices = new Map()
   #sessions = new Map()
-  constructor({ now = Date.now, limit = 32, store } = {}) {
-    this.now = now; this.limit = limit; this.store = store
-    for (const device of store?.read().devices ?? []) this.#devices.set(device.deviceId, device)
+  constructor({ now = Date.now, limit = 32, lifetimeMs = 90 * 86400_000, store } = {}) {
+    this.now = now; this.limit = limit; this.store = store; this.lifetimeMs = lifetimeMs
+    this.presence = new Map()
+    this.expiryTimer = setInterval(() => this.#prune(), 30_000); this.expiryTimer.unref?.()
+    let migrated = false
+    for (const device of store?.read().devices ?? []) {
+      if (device.state === 'approved' && !Number.isFinite(device.approvedAt)) {
+        device.approvedAt = this.now(); device.expiresAt = this.now() + this.lifetimeMs; migrated = true
+      }
+      this.#devices.set(device.deviceId, device)
+    }
+    if (migrated) this.#save()
     this.#prune()
   }
   #save() {
@@ -27,7 +36,11 @@ export class Devices {
   }
   #prune() {
     for (const [key, invite] of this.#invitations) if (invite.expiresAt <= this.now()) this.#invitations.delete(key)
-    for (const [id, device] of this.#devices) if (device.state === 'pending' && device.expiresAt <= this.now()) this.#devices.delete(id)
+    for (const [id, device] of this.#devices) if (device.expiresAt <= this.now()) {
+      this.#devices.delete(id)
+      const callbacks = this.#sessions.get(id) ?? []; this.#sessions.delete(id); this.presence.delete(id)
+      for (const close of callbacks) { try { close() } catch {} }
+    }
   }
   invite() {
     this.#prune()
@@ -53,7 +66,7 @@ export class Devices {
     this.#prune()
     const device = this.#devices.get(deviceId)
     check(device?.state === 'pending', 'not-pending', 409)
-    device.state = 'approved'; device.role = role
+    device.state = 'approved'; device.role = role; device.approvedAt = this.now(); device.expiresAt = this.now() + this.lifetimeMs
     this.#save()
     return { deviceId, state: device.state }
   }
@@ -63,6 +76,7 @@ export class Devices {
     const hash = digest(credential)
     const device = [...this.#devices.values()].find(d => d.hash === hash && (allowPending || d.state === 'approved'))
     check(device, 'unauthorized', 401)
+    this.presence.set(device.deviceId, this.now())
     const { deviceId, name, state, role } = device
     return { deviceId, name, state, role }
   }
@@ -76,6 +90,7 @@ export class Devices {
   revoke(deviceId) {
     check(this.#devices.has(deviceId), 'unknown-device', 404)
     this.#devices.delete(deviceId)
+    this.presence.delete(deviceId)
     this.#save()
     const callbacks = this.#sessions.get(deviceId) ?? []
     this.#sessions.delete(deviceId)
@@ -84,9 +99,10 @@ export class Devices {
   }
   list() {
     this.#prune()
-    return [...this.#devices.values()].map(({ deviceId, name, state, role }) => ({ deviceId, name, state, role }))
+    return [...this.#devices.values()].map(({ deviceId, name, state, role, expiresAt, approvedAt }) => ({ deviceId, name, state, role, expiresAt, approvedAt, lastSeenAt: this.presence.get(deviceId) ?? null, connected: !!this.#sessions.get(deviceId)?.size }))
   }
   dispose() {
+    clearInterval(this.expiryTimer); this.presence.clear()
     for (const callbacks of this.#sessions.values()) for (const close of callbacks) { try { close() } catch {} }
     this.#sessions.clear(); this.#devices.clear(); this.#invitations.clear()
   }

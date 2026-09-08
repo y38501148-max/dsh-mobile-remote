@@ -4,28 +4,29 @@ export class RemoteApi {
     const response = await this.fetch(this.remote ? '/remote/session' : '/api/plugin/mobile-remote/status')
     const value = await response.json()
     if (!response.ok) throw Error(value.error || `HTTP ${response.status}`)
-    this.epoch = value.hostEpoch; this.deviceId = value.deviceId ?? `desktop:${this.clientId}`
+    if (value.protocolVersion !== 1) throw Error('手机协议版本不兼容，请刷新页面或更新插件。')
+    this.role = value.role ?? 'admin'; this.epoch = value.hostEpoch; this.deviceId = value.deviceId ?? `desktop:${this.clientId}`
     return value
   }
   async call(path, payload = {}) {
     if (!this.epoch) await this.status()
     const base = this.remote ? '/remote/shared/' : '/api/plugin/mobile-remote/'
-    const response = await this.fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...payload, hostEpoch: this.epoch, clientId: this.clientId }) })
+    const response = await this.fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dsh-mobile-protocol': '1' }, body: JSON.stringify({ ...payload, hostEpoch: this.epoch, clientId: this.clientId }) })
     const value = await response.json()
     if (!response.ok && response.status !== 409) throw Error(value.error || `HTTP ${response.status}`)
     if (value.error === 'host-epoch-mismatch') { await this.status(); throw Error('Host 已重启，请先核对草稿和待确认操作。') }
     return value
   }
 }
-function snapshot(input, images) {
+function snapshot(input, images, files) {
   const state = input.state.getSnapshot()
-  return { text: state.draft, attachments: images?.snapshot(state.imageIds) ?? [], occurrences: state.occurrences.map(({ source, ref, offset, label, clipboardText }) => ({ source, ref, offset, label, clipboardText })) }
+  return { text: state.draft, files: files?.snapshot() ?? [], attachments: images?.snapshot(state.imageIds) ?? [], occurrences: state.occurrences.map(({ source, ref, offset, label, clipboardText }) => ({ source, ref, offset, label, clipboardText })) }
 }
-function equivalent(a, b) { return a.text === b.text && JSON.stringify(a.occurrences ?? []) === JSON.stringify(b.occurrences ?? []) && JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? []) }
+function equivalent(a, b) { return a.text === b.text && JSON.stringify(a.occurrences ?? []) === JSON.stringify(b.occurrences ?? []) && JSON.stringify(a.attachments ?? []) === JSON.stringify(b.attachments ?? []) && JSON.stringify(a.files ?? []) === JSON.stringify(b.files ?? []) }
 
 export class DraftClient {
-  constructor({ api, sessionId, input, storage, images, changed = () => {} }) {
-    this.images = images; this.api = api; this.sessionId = sessionId; this.input = input; this.storage = storage; this.changed = changed
+  constructor({ api, sessionId, input, storage, images, files, changed = () => {} }) {
+    this.files = files; this.images = images; this.api = api; this.sessionId = sessionId; this.input = input; this.storage = storage; this.changed = changed
     this.key = `dsh-remote-draft:${sessionId}`; this.state = { status: 'loading', conflicts: [] }
     this.revision = undefined; this.dirty = false; this.busy = false; this.applying = false; this.sending = false; this.skipEmpty = false
     this.pending = Promise.resolve(); this.alive = true
@@ -38,17 +39,22 @@ export class DraftClient {
     } catch {}
     this.lastInput = snapshot(input, this.images)
     this.unsubscribe = input.state.subscribe(() => this.onInput())
+    this.fileChanged = () => this.onInput()
+    globalThis.addEventListener?.('dsh-mobile-files-change', this.fileChanged)
     this.initial = this.refresh(true)
     this.timer = setInterval(() => this.refresh().catch(error => this.notice(error.message)), 1500)
   }
   publish(extra) { this.state = { ...this.state, ...extra }; this.changed() }
   notice(message) { this.publish({ status: this.state.status === 'conflict' ? 'conflict' : 'unsynced', message }) }
-  persist(value = snapshot(this.input, this.images)) {
+  persist(value = snapshot(this.input, this.images, this.files)) {
     try { this.storage?.setItem(this.key, JSON.stringify(value)) } catch { this.notice('本机草稿存储空间不足，请复制保留输入。') }
   }
+  async loadAssets(value) { await Promise.all([this.images?.load(value), this.files?.load(value)]) }
+  async prepareAssets(value) { if (this.images) value = await this.images.prepare(value); if (this.files) value = await this.files.prepare(value); return value }
   apply(value) {
     this.applying = true
     try {
+      this.files?.apply(value)
       this.images?.apply(value, this.input)
       this.input.setDraft(value.text)
       for (const occurrence of value.occurrences ?? []) {
@@ -62,9 +68,9 @@ export class DraftClient {
     if (this.applying || !this.alive) return
     const state = this.input.state.getSnapshot()
     if (['submitting', 'adjudicating'].includes(state.phase)) return
-    const value = snapshot(this.input, this.images)
+    const value = snapshot(this.input, this.images, this.files)
     if (this.lastInput && equivalent(this.lastInput, value)) return
-    if (!value.text && !value.attachments.length && (this.lastInput?.text || this.lastInput?.attachments?.length)) this.clearedSnapshot = this.lastInput
+    if (!value.text && !value.attachments.length && !value.files.length && (this.lastInput?.text || this.lastInput?.attachments?.length || this.lastInput?.files?.length)) this.clearedSnapshot = this.lastInput
     this.lastInput = value; this.dirty = true; this.persist(value)
     if (this.sending) return
     if (this.state.status === 'conflict') { this.publish({ message: '本机修改已保留，请先选择要使用的草稿。' }); return }
@@ -80,16 +86,16 @@ export class DraftClient {
       if (!this.alive || this.sending) return
       if (this.revision !== undefined && remote.revision < this.revision) return
       this.publish({ conflicts: remote.conflicts ?? [], lease: remote.lease })
-      const local = snapshot(this.input, this.images)
+      const local = snapshot(this.input, this.images, this.files)
       if (initial || this.revision === undefined) {
         this.revision = remote.revision
         this.publish({ remote })
-        if (this.recovered?.attachments?.length) {
-          const before = snapshot(this.input, this.images)
-          await this.images?.load(this.recovered)
-          if (!equivalent(before, snapshot(this.input, this.images))) return
+        if ((this.recovered?.attachments?.length || this.recovered?.files?.length)) {
+          const before = snapshot(this.input, this.images, this.files)
+          await this.loadAssets(this.recovered)
+          if (!equivalent(before, snapshot(this.input, this.images, this.files))) return
           this.apply(this.recovered)
-          this.lastInput = snapshot(this.input, this.images)
+          this.lastInput = snapshot(this.input, this.images, this.files)
           this.dirty = !equivalent(this.lastInput, remote)
           this.recovered = null
           if (this.dirty) { this.publish({ status: 'conflict', message: '已恢复本机图片草稿，请核对共享版本后接管。', remote }); return }
@@ -98,26 +104,26 @@ export class DraftClient {
         // Native rc.6 restores text separately from runtime-only image ids.
         // A matching text-only native mirror is incomplete, not an intentional
         // attachment deletion. Restore the complete authoritative draft.
-        if (!this.recovered && local.text === remote.text && !local.attachments.length && remote.attachments?.length && JSON.stringify(local.occurrences ?? []) === JSON.stringify(remote.occurrences ?? [])) {
-          await this.images?.load(remote)
-          if (!equivalent(local, snapshot(this.input, this.images))) return
-          this.apply(remote); this.lastInput = snapshot(this.input, this.images); this.dirty = false
+        if (!this.recovered && local.text === remote.text && !local.attachments.length && !local.files.length && (remote.attachments?.length || remote.files?.length) && JSON.stringify(local.occurrences ?? []) === JSON.stringify(remote.occurrences ?? [])) {
+          await this.loadAssets(remote)
+          if (!equivalent(local, snapshot(this.input, this.images, this.files))) return
+          this.apply(remote); this.lastInput = snapshot(this.input, this.images, this.files); this.dirty = false
           this.publish({ status: 'synced', message: '草稿已同步', remote }); return
         }
-        if ((local.text || local.attachments.length) && !equivalent(local, remote)) {
+        if ((local.text || local.attachments.length || local.files.length) && !equivalent(local, remote)) {
           this.dirty = true; this.persist(local)
-          if (remote.revision > 0 || remote.text || remote.attachments?.length) { this.publish({ status: 'conflict', message: '本机与共享草稿不同，两份内容均已保留。', remote }); return }
+          if (remote.revision > 0 || remote.text || remote.attachments?.length || remote.files?.length) { this.publish({ status: 'conflict', message: '本机与共享草稿不同，两份内容均已保留。', remote }); return }
           await this.flush(); return
         }
       }
       if (!this.dirty && !['submitting', 'adjudicating'].includes(this.input.state.getSnapshot().phase)) {
         this.revision = remote.revision
         if (!equivalent(local, remote)) {
-          await this.images?.load(remote)
-          if (this.dirty || this.sending || !equivalent(local, snapshot(this.input, this.images))) return
+          await this.loadAssets(remote)
+          if (this.dirty || this.sending || !equivalent(local, snapshot(this.input, this.images, this.files))) return
           this.apply(remote)
         }
-        this.lastInput = snapshot(this.input, this.images)
+        this.lastInput = snapshot(this.input, this.images, this.files)
         this.publish({ status: 'synced', message: '草稿已同步', remote })
       }
     } catch (error) { if (this.recovered) this.publish({ status: 'conflict', message: error.message }); else this.notice(error.message) }
@@ -128,8 +134,8 @@ export class DraftClient {
       if (!this.dirty && !takeover) return this.revision
       this.busy = true
       try {
-        let content = captured ?? snapshot(this.input, this.images); this.persist(content)
-        if (this.images) { content = await this.images.prepare(content); this.persist(content) }
+        let content = captured ?? snapshot(this.input, this.images, this.files); this.persist(content)
+        content = await this.prepareAssets(content); this.persist(content)
         if (takeover) {
           const acquired = await this.api.call('draft/lease', { sessionId: this.sessionId, takeover: true })
           if (!acquired.ok) throw Error(acquired.error)
@@ -139,7 +145,7 @@ export class DraftClient {
         if (!result.ok) { this.publish({ status: 'conflict', message: result.error === 'lease-held' ? '另一设备正在编辑；你的输入已保留为冲突副本。' : '草稿版本冲突；你的输入已保留。', conflicts: result.current?.conflicts ?? [], remote: result.current }); throw Error(this.state.message) }
         this.revision = result.draft.revision
         this.state.remote = result.draft
-        if (equivalent(snapshot(this.input, this.images), content)) {
+        if (equivalent(snapshot(this.input, this.images, this.files), content)) {
           this.dirty = false; this.storage?.removeItem(this.key)
           this.publish({ status: 'synced', message: '草稿已同步', remote: result.draft })
         }
@@ -149,28 +155,28 @@ export class DraftClient {
     const operation = this.pending.then(run); this.pending = operation.catch(() => {}); return operation
   }
   async useRemote() {
-    const local = snapshot(this.input, this.images)
+    const local = snapshot(this.input, this.images, this.files)
     // Explicit replacement keeps the current local copy in Host conflict history.
     const remote = await this.api.call('draft/read', { sessionId: this.sessionId })
-    if ((local.text || local.attachments.length) && !equivalent(local, remote)) {
-      await this.api.call('draft/preserve', { sessionId: this.sessionId, ...local, clientMutationId: crypto.randomUUID() })
+    if ((local.text || local.attachments.length || local.files.length) && !equivalent(local, remote)) {
+      await this.api.call('draft/preserve', { sessionId: this.sessionId, ...await this.prepareAssets(local), clientMutationId: crypto.randomUUID() })
     }
-    await this.images?.load(remote)
+    await this.loadAssets(remote)
     this.dirty = false; this.revision = remote.revision; this.apply(remote); this.storage?.removeItem(this.key); await this.refresh()
   }
   beginPrompt() {
     // rc.6's normal sink commits an optimistic clear immediately before
     // calling ConversationController.sendSession. Capture that exact previous
     // input, cancel its queued empty write, and allow the user to type anew.
-    const current = snapshot(this.input, this.images)
-    this.submittingSnapshot = (current.text || current.attachments.length) ? current : this.clearedSnapshot ?? current
+    const current = snapshot(this.input, this.images, this.files)
+    this.submittingSnapshot = (current.text || current.attachments.length || current.files.length) ? current : this.clearedSnapshot ?? current
     this.sending = true; clearTimeout(this.debounce)
     this.persist(this.submittingSnapshot)
   }
   async beforePrompt() {
     await this.initial
     if (this.state.status === 'conflict') throw Error('请先处理草稿冲突，再发送。')
-    const submitted = this.submittingSnapshot ?? snapshot(this.input, this.images)
+    const submitted = this.submittingSnapshot ?? snapshot(this.input, this.images, this.files)
     this.dirty = !equivalent(submitted, this.state.remote ?? { text: '' })
     await this.flush(false, submitted)
     return this.revision
@@ -178,10 +184,11 @@ export class DraftClient {
   async afterPrompt(revision, accepted) {
     try {
       if (accepted && revision !== undefined) {
+        this.files?.removeSubmitted(this.submittingSnapshot?.files)
         const result = await this.api.call('draft/clear', { sessionId: this.sessionId, expectedRevision: revision })
         if (result.ok) { this.revision = result.draft.revision; this.state.remote = result.draft }
-        const current = snapshot(this.input, this.images)
-        this.dirty = !!(current.text || current.attachments.length)
+        const current = snapshot(this.input, this.images, this.files)
+        this.dirty = !!(current.text || current.attachments.length || current.files.length)
         this.lastInput = current
         if (!this.dirty) this.storage?.removeItem(this.key)
         else this.persist(current)
@@ -195,5 +202,5 @@ export class DraftClient {
       }
     }
   }
-  dispose() { this.alive = false; clearInterval(this.timer); clearTimeout(this.debounce); this.unsubscribe(); if (this.dirty) this.persist() }
+  dispose() { this.alive = false; clearInterval(this.timer); clearTimeout(this.debounce); this.unsubscribe(); globalThis.removeEventListener?.('dsh-mobile-files-change', this.fileChanged); if (this.dirty) this.persist() }
 }

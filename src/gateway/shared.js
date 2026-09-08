@@ -1,7 +1,11 @@
 import { browseDirectory } from './directory.js'
 import { check } from '../auth/devices.js'
-export function sharedOperations({ drafts, follow, commands, store, uploads, push }) {
+export function sharedOperations({ drafts, follow, commands, store, uploads, push, resources, extensions, queue }) {
   return {
+    'queue/update': (p, d) => { check(d.role !== 'viewer', 'read-only', 403); return queue.update(p, d.deviceId) },
+    'extensions/read': () => extensions.read(),
+    'extensions/mode': (p, d) => { check(d.role !== 'viewer', 'read-only', 403); return extensions.mode(p, d.deviceId) },
+    'resource/open': (p, d) => resources.issue(p, d),
     'push/key': () => push.key(),
     'push/status': (p, d) => push.status(d.deviceId),
     'push/subscribe': (p, d) => push.subscribe(d.deviceId, p.subscription),

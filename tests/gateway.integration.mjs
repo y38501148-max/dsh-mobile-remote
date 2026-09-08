@@ -20,13 +20,13 @@ function secure(port, origin, ca, path, { method = 'GET', cookie, payload, heade
 }
 
 test('real Host through TLS gateway: pairing, native UI, write receipt replay, both WS, revocation', { timeout: 60000 }, async () => {
-  const host = await fullHost()
+  let host = await fullHost()
   const streams = []
   try {
     const certPath = join(host.sandbox, 'cert.pem'), keyPath = join(host.sandbox, 'key.pem')
     await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyPath, '-out', certPath, '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'])
     const ca = await readFile(certPath), port = await freePort(), origin = `https://localhost:${port}`
-    const status = await (await fetch(`${host.origin}/api/plugin/mobile-remote/status`)).json()
+    let status = await (await fetch(`${host.origin}/api/plugin/mobile-remote/status`)).json()
     const local = async (path, value) => {
       const response = await fetch(`${host.origin}/api/plugin/mobile-remote/${path}`, { method: 'POST', headers: { origin: host.origin, 'content-type': 'application/json' }, body: JSON.stringify({ hostEpoch: status.hostEpoch, ...value }) })
       const body = await response.json(); assert.equal(response.status, 200, JSON.stringify(body)); return body
@@ -44,6 +44,7 @@ test('real Host through TLS gateway: pairing, native UI, write receipt replay, b
     assert.match(claimed.headers['set-cookie'][0], /Secure; HttpOnly; SameSite=Strict/)
     assert.equal((await call('/api/session.list', { method: 'POST', cookie, payload: {} })).status, 401)
     await local('pair/approve', { deviceId, role: 'operator' })
+    assert.equal((await call('/', { cookie, headers: { 'x-dsh-mobile-protocol': '999' } })).status, 409)
     const page = await call('/', { cookie }); assert.equal(page.status, 200); assert.match(page.text, /remote\/bootstrap.js/)
     assert.equal((await call('/api/settings.replace', { method: 'POST', cookie, payload: {} })).status, 403)
     assert.equal((await call('/api/plugin/repair/hot-reset', { cookie })).status, 403)
@@ -63,7 +64,17 @@ test('real Host through TLS gateway: pairing, native UI, write receipt replay, b
       if (path.endsWith('mux')) await message
     }
     const closed = streams.map(ws => new Promise(resolve => ws.once('close', resolve)))
-    await local('devices/revoke', { deviceId }); await Promise.all(closed)
+    const sandbox = host.sandbox, oldEpoch = status.hostEpoch
+    await host.stop({ preserve: true }); await Promise.all(closed)
+    host = await fullHost({ sandbox })
+    status = await (await fetch(`${host.origin}/api/plugin/mobile-remote/status`)).json()
+    assert.notEqual(status.hostEpoch, oldEpoch); assert.equal(status.enabled, true)
+    assert.equal((await call('/', { cookie })).status, 200, 'authorized gateway is restored after Host restart')
+    assert.equal((await call('/api/session.create', options)).status, 409, 'old epoch cannot write after restart')
+    const resumed = new WebSocket(`wss://127.0.0.1:${port}/api/events.mux`, { ca, origin, headers: { host: new URL(origin).host, cookie } }); streams.push(resumed)
+    await new Promise((resolve, reject) => { resumed.once('open', resolve); resumed.once('error', reject) })
+    const revoked = new Promise(resolve => resumed.once('close', resolve))
+    await local('devices/revoke', { deviceId }); await revoked
     assert.equal((await call('/', { cookie })).status, 401)
     await local('gateway/disable', {})
   } finally { for (const ws of streams) ws.terminate(); await host.stop() }

@@ -27,7 +27,9 @@ export class Commands {
     }
     // No silent expiry: forgetting a receipt could re-execute an old command.
     check(Object.keys(this.store.read().commands).length < 10000, 'command-ledger-full', 507)
-    this.store.update(value => { value.commands[key] = { deviceId, commandId, hash, epoch: this.epoch, state: 'pending', at: Date.now() } })
+    let metadata = {}
+    try { const parsed = JSON.parse(String(bytes)); const request = parsed.request ?? parsed; metadata = Object.fromEntries(Object.entries({ method: request.method, sessionId: request.payload?.sessionId }).filter(([, value]) => typeof value === 'string' && value.length <= 256)) } catch {}
+    this.store.update(value => { value.commands[key] = { ...metadata, deviceId, commandId, hash, epoch: this.epoch, state: 'pending', at: Date.now() } })
     const pending = (async () => {
       try {
         const response = await dispatch()
@@ -39,7 +41,8 @@ export class Commands {
     this.#pending.set(key, pending)
     return pending
   }
+  async drain() { await Promise.allSettled([...this.#pending.values()]) }
   list(deviceId) {
-    return Object.values(this.store.read().commands).filter(c => c.deviceId === deviceId).map(({ commandId, state, epoch, at }) => ({ commandId, state: state === 'pending' && epoch !== this.epoch ? 'outcome-unknown' : state, epoch, at }))
+    return Object.values(this.store.read().commands).filter(c => c.deviceId === deviceId).map(({ commandId, state, epoch, at, method, sessionId }) => ({ commandId, state: state === 'pending' && epoch !== this.epoch ? 'outcome-unknown' : state, epoch, at, method, sessionId }))
   }
 }

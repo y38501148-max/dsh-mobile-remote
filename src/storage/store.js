@@ -1,10 +1,19 @@
 import { mkdirSync, readFileSync, openSync, writeFileSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs'
+import lockfile from 'proper-lockfile'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 // Persist-before-publish. Sync fsync keeps the small control-plane transaction
 // indivisible relative to other requests in this process. One Host owns a store.
 export class StateStore {
+  static async acquire(path) {
+    if (!path) return new StateStore()
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    let store
+    const release = await lockfile.lock(path, { realpath: false, stale: 10000, update: 2000, retries: { retries: 12, minTimeout: 250, maxTimeout: 1000 }, onCompromised: error => { if (store) { store.fault = error; store.onFault?.(error) } } })
+    try { store = new StateStore(path); store.release = release; return store } catch (error) { await release(); throw error }
+  }
+  async close() { this.closed = true; if (this.release) { const release = this.release; this.release = null; await release() } }
   constructor(path) {
     this.path = path
     this.value = { version: 1, devices: [], drafts: {}, commands: {}, audit: [] }
@@ -17,7 +26,7 @@ export class StateStore {
       } catch (error) { if (error.code !== 'ENOENT') throw error }
     }
   }
-  read() { return structuredClone(this.value) }
+  read() { if (this.closed) throw Error('mobile-remote-state-closed'); if (this.fault) throw Error('mobile-remote-state-ownership-lost'); return structuredClone(this.value) }
   update(change) {
     const candidate = this.read()
     const result = change(candidate)

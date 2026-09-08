@@ -26,3 +26,20 @@ test('push retains only subscription, sends generic payload and stops after devi
     push.close()
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
+test('native mux attention events produce a generic push and disposal stops the event consumer', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-push-events-'))
+  try {
+    const sent = [], push = new Push(new StateStore(join(directory, 'state')), { list: () => [{ deviceId: 'phone', state: 'approved' }] }, { send: async (...args) => sent.push(args) })
+    push.subscribe('phone', subscription)
+    let stopped = false
+    push.start({ events: { async *mux(_, signal) {
+      yield { payload: { type: 'approval/requested', privateText: 'must not appear in notification' } }
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+      stopped = true
+    } } })
+    for (let n = 0; !sent.length && n < 100; n++) await new Promise(r => setTimeout(r, 10))
+    assert.deepEqual(JSON.parse(sent[0][1]), { kind: 'attention' })
+    push.close(); await push.consumer
+    assert.equal(stopped, true); assert.equal(push.inflight.size, 0)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

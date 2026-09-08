@@ -60,3 +60,21 @@ test('native text-only reload restores shared image instead of publishing attach
   try { await client.initial; assert.deepEqual(state.imageIds, ['shared-image']); assert.equal(client.state.status, 'synced'); assert.equal(writes.length, 0) }
   finally { client.dispose() }
 })
+test('collection removes abandoned uploads while retaining shared draft references', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-upload-gc-'))
+  try {
+    let now = 0
+    const store = new StateStore(join(directory, 'state.json')), uploads = new Uploads(store, { now: () => now })
+    const old = uploads.begin({ sessionId: 's', name: 'old.png', type: 'image/png', size: png.length }, 'a')
+    const ready = uploads.begin({ sessionId: 's', name: 'kept.png', type: 'image/png', size: png.length }, 'a')
+    uploads.chunk({ id: ready.id, offset: 0, data: png.toString('base64') }, 'a')
+    uploads.commit({ id: ready.id, sha256: createHash('sha256').update(png).digest('hex') }, 'a')
+    const drafts = new Drafts({ store, uploads })
+    drafts.write({ sessionId: 's', expectedRevision: 0, text: '', attachments: [ready.id] })
+    now = 8 * 86400_000; uploads.collect()
+    assert.throws(() => uploads.get(old.id), /unknown-upload/)
+    assert.equal(uploads.get(ready.id).state, 'ready')
+    drafts.clear('s', 1); uploads.collect()
+    assert.throws(() => uploads.get(ready.id), /unknown-upload/)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

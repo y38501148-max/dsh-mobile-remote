@@ -32,12 +32,12 @@ export class Drafts {
     this.#leases.set(sessionId, { deviceId, expiresAt: this.now() + 15000 })
     return { ok: true, draft: this.read(sessionId) }
   }
-  write({ sessionId, expectedRevision, text, attachments = [], occurrences = [], deviceId, clientMutationId }) {
+  write({ sessionId, expectedRevision, text, attachments = [], files = [], occurrences = [], deviceId, clientMutationId }) {
     this.#key(sessionId)
     check(Number.isSafeInteger(expectedRevision) && expectedRevision >= 0, 'invalid-revision')
     check(typeof text === 'string' && Buffer.byteLength(text) <= 65536, 'invalid-draft')
-    if (this.uploads) this.uploads.validate(attachments, sessionId)
-    else check(Array.isArray(attachments) && attachments.length === 0, 'attachments-not-supported')
+    if (this.uploads) { this.uploads.validate(attachments, sessionId); this.uploads.validate(files, sessionId, 'text') }
+    else check(Array.isArray(attachments) && attachments.length === 0 && Array.isArray(files) && files.length === 0, 'attachments-not-supported')
     check(Array.isArray(occurrences) && occurrences.length <= 128, 'invalid-references')
     const offsets = new Set()
     for (const ref of occurrences) {
@@ -49,12 +49,12 @@ export class Drafts {
     check(this.#values.has(sessionId) || this.#values.size < this.limit, 'draft-limit', 429)
     const current = this.read(sessionId)
     if (clientMutationId && current.clientMutationId === clientMutationId && current.deviceId === deviceId) {
-      check(current.text === text && JSON.stringify(current.occurrences ?? []) === JSON.stringify(occurrences) && JSON.stringify(current.attachments) === JSON.stringify(attachments), 'mutation-id-reused', 409)
+      check(current.text === text && JSON.stringify(current.occurrences ?? []) === JSON.stringify(occurrences) && JSON.stringify(current.attachments) === JSON.stringify(attachments) && JSON.stringify(current.files ?? []) === JSON.stringify(files), 'mutation-id-reused', 409)
       return { ok: true, draft: current }
     }
     const held = current.lease && deviceId && current.lease.deviceId !== deviceId
     if (current.revision !== expectedRevision || held) {
-      const conflict = { id: randomUUID(), text, attachments, occurrences, deviceId, at: this.now() }
+      const conflict = { id: randomUUID(), text, attachments, files, occurrences, deviceId, at: this.now() }
       if (clientMutationId) {
         const existing = current.conflicts?.find(c => c.clientMutationId === clientMutationId && c.deviceId === deviceId)
         if (existing) return { ok: false, error: held ? 'lease-held' : 'revision-conflict', current, conflict: existing }
@@ -69,7 +69,7 @@ export class Drafts {
       return { ok: false, error: held ? 'lease-held' : 'revision-conflict', current: this.read(sessionId), conflict }
     }
     check(this.#values.has(sessionId) || this.#values.size < this.limit, 'draft-limit', 429)
-    const value = { revision: current.revision + 1, text, attachments, occurrences, conflicts: current.conflicts ?? [], deviceId, clientMutationId }
+    const value = { revision: current.revision + 1, text, attachments, files, occurrences, conflicts: current.conflicts ?? [], deviceId, clientMutationId }
     this.#save(sessionId, value)
     if (deviceId) this.#leases.set(sessionId, { deviceId, expiresAt: this.now() + 15000 })
     return { ok: true, draft: this.read(sessionId) }
@@ -79,14 +79,14 @@ export class Drafts {
     const current = this.read(sessionId)
     if (current.revision !== expectedRevision) return { ok: false, error: 'revision-conflict', current }
     const { lease, ...value } = current
-    value.text = ''; value.attachments = []; value.occurrences = []; value.revision++; delete value.clientMutationId
+    value.text = ''; value.attachments = []; value.files = []; value.occurrences = []; value.revision++; delete value.clientMutationId
     this.#save(sessionId, value)
     return { ok: true, draft: this.read(sessionId) }
   }
-  preserve({ sessionId, text, attachments = [], occurrences = [], deviceId, clientMutationId }) {
+  preserve({ sessionId, text, attachments = [], files = [], occurrences = [], deviceId, clientMutationId }) {
     // A deliberately mismatched positive revision takes the same validated,
     // bounded conflict path without replacing the shared draft.
-    return this.write({ sessionId, text, attachments, occurrences, deviceId, clientMutationId, expectedRevision: this.read(sessionId).revision + 1 })
+    return this.write({ sessionId, text, attachments, files, occurrences, deviceId, clientMutationId, expectedRevision: this.read(sessionId).revision + 1 })
   }
   resolve(sessionId, conflictId) {
     const current = this.read(sessionId)

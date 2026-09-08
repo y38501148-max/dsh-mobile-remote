@@ -37,3 +37,16 @@ test('receipt lost in transit replays once; crash during dispatch remains unknow
   const unresolved = await new Commands(store, 'restarted').execute('phone', 'lost', Buffer.from('payload'), dispatch)
   assert.equal(unresolved.status, 409); assert.match(unresolved.body, /outcome-unknown/); assert.equal(calls, 2)
 })
+
+test('a second Host cannot own the same state file; releasing ownership preserves data', { timeout: 20000 }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-owner-')), path = join(directory, 'state.json')
+  let first, next
+  try {
+    first = await StateStore.acquire(path)
+    first.update(value => { value.audit.push({ type: 'retained' }) })
+    await assert.rejects(StateStore.acquire(path), error => error.code === 'ELOCKED')
+    await first.close(); first = null
+    next = await StateStore.acquire(path)
+    assert.equal(next.read().audit[0].type, 'retained')
+  } finally { await first?.close(); await next?.close(); rmSync(directory, { recursive: true, force: true }) }
+})

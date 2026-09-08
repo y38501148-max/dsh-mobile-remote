@@ -1,26 +1,37 @@
-# 自建单 Host 中继
+# 中继接入
 
-本组件已实现并通过本地集成测试，本轮开发不替用户部署服务器。每个实例绑定一台电脑；多台电脑使用独立实例、端口和令牌。
+本轮不部署公网服务。实现采用标准 TLS：手机到电脑网关的业务 TLS 字节通过中继透明转发，中继的控制连接另外使用 WSS。中继不持有业务证书私钥，仍能观察连接地址、时长及流量大小。
 
-手机访问中继的 publicPort（通常 443）。这是一条原始 TCP 通道，内部 TLS 一直终止到电脑 mobile-remote 网关；中继没有业务域名的 TLS 私钥。电脑用另一个 WSS 控制端口主动连接中继，按连接创建受令牌保护的数据通道。中继可见连接来源、时序、流量和 TLS 握手元数据，不能据此宣称匿名或隐藏域名。没有自创加密协议。
-
-在中继服务器安装本包，准备控制域名证书及至少 32 字节随机令牌文件，权限设为仅服务账户可读。令牌文件通过用户自己的安全渠道放到电脑。不要把令牌写进 URL、二维码或仓库。
-
-配置示例：
+每个实例连接一台 Host。服务端准备控制域名证书、至少 32 字节随机中继令牌文件，并编写仅服务账户可读的配置：
 
 ```json
 {
   "bind": "0.0.0.0",
   "controlPort": 8443,
   "publicPort": 443,
-  "certPath": "/etc/dsh-relay/control-fullchain.pem",
-  "keyPath": "/etc/dsh-relay/control-privkey.pem",
-  "tokenPath": "/etc/dsh-relay/host-token"
+  "certPath": "/etc/dsh/control-fullchain.pem",
+  "keyPath": "/etc/dsh/control-key.pem",
+  "tokenPath": "/etc/dsh/relay-token"
 }
 ```
 
-运行 `dsh-mobile-relay /etc/dsh-relay/relay.json`。用服务管理器运行并设置退出重启；开放控制和业务端口。不要用普通 HTTP 反向代理接管业务端口 TLS。业务 DNS 指向中继服务器。
+启动：
 
-在电脑插件设置中填写手机业务 HTTPS 地址（例如 `https://mobile.example.com`）、其证书与私钥路径、loopback 监听端口、`wss://relay.example.com:8443/relay/control` 与本机令牌文件路径，选择仅本机监听。手机证书必须覆盖业务域名；中继控制证书必须覆盖控制域名。电脑仍绑定桌面的同一个 Host。
+```sh
+dsh-mobile-relay /etc/dsh/relay.json
+```
 
-控制断开会关闭数据通道；电脑最多每 30 秒重新连接。数据通过带背压的 stream 转发，同时最多 64 个连接，未接上的数据通道 10 秒超时。`npm run test:relay` 验证令牌拒绝、1 MiB 字节一致和断开清理。公网 DNS、证书、蜂窝切换与真机通知属于之后的用户环境验收。
+电脑「手机远程」填写：
+
+| 字段 | 示例 |
+| --- | --- |
+| HTTPS 地址 | `https://phone.example.com` |
+| 业务证书/私钥 | 电脑上匹配 `phone.example.com` 的证书与私钥路径 |
+| 监听地址 | `127.0.0.1` |
+| 监听端口 | `9443` |
+| 中继控制地址 | `wss://control.example.com:8443/relay/control` |
+| 中继令牌文件 | 电脑上的同一随机令牌文件 |
+
+两个域名解析到中继服务器。公开业务端口 443 是原始 TLS TCP 转发，不要再由 HTTP 反向代理终止这条业务 TLS。电脑只主动发起 WSS，不必对互联网开放本机网关端口。
+
+关闭远程入口会断开中继、释放防休眠并取消重启恢复；不取消 Host 原有任务。控制连接中断会关闭相应业务连接，电脑会尝试重连。真实跨网部署仍需手机实验。

@@ -36,8 +36,10 @@ export class Push {
     const keys = this.store.read().pushKeys
     try {
       await this.send(subscription, JSON.stringify({ kind }), { vapidDetails: { subject: 'https://github.com/y38501148-max/dsh-mobile-remote', ...keys }, TTL: 3600, urgency: kind === 'attention' ? 'high' : 'normal', timeout: 10000, topic: 'dsh-remote-task' })
+      if (!this.active) return
       this.store.audit({ type: 'push-delivered', deviceId, kind })
     } catch (error) {
+      if (!this.active) return
       if ([404, 410].includes(error.statusCode)) this.remove(deviceId)
       this.store.audit({ type: 'push-failed', deviceId, code: error.statusCode ?? 'network-error' })
     }

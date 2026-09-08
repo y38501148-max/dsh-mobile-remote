@@ -10,13 +10,13 @@ test('custom routes require local peer, exact authority and same-origin browser'
   }
 })
 
-test('plugin registers on the injected Host and owns its route disposer', () => {
+test('plugin registers on the injected Host and owns its route disposer', async () => {
   let removed = false
   const routes = []
   let dispose
-  apply({ webServer: { port: 43123, register(value) { routes.push(value); return () => { removed = true } } }, effect(fn) { dispose = fn() } })
-  assert.equal(routes[0].path, '/api/plugin/mobile-remote/status')
+  await apply({ webServer: { port: 43123, register(value) { routes.push(value); return () => { removed = true } } }, effect(fn) { dispose = fn() } })
+  assert.ok(routes.some(route => route.path === '/api/plugin/mobile-remote/status'))
   assert.equal(new Set(routes.map(route => route.path)).size, routes.length)
-  dispose()
+  await dispose()
   assert.equal(removed, true)
 })

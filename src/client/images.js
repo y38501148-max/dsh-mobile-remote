@@ -20,14 +20,15 @@ export class SharedImages {
       if (!descriptor) throw Error('本机图片已不可用，请重新选择附件。')
       const { file } = descriptor
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const entry = await this.api.call('upload/begin', { sessionId: this.sessionId, name: file.name, type: file.type, size: file.size })
+      const sha256 = await digest(bytes)
+      const entry = await this.api.call('upload/begin', { sessionId: this.sessionId, name: file.name, type: file.type, size: file.size, uploadKey: `${id}:${sha256}` })
       if (entry.error) throw Error(entry.error)
-      for (let offset = 0; offset < bytes.length; offset += 32768) {
+      for (let offset = entry.offset; offset < bytes.length; offset += 32768) {
         this.notice(`正在同步图片 ${Math.floor(offset / bytes.length * 100)}%`)
         const result = await this.api.call('upload/chunk', { id: entry.id, offset, data: encode(bytes.subarray(offset, offset + 32768)) })
         if (result.error) throw Error(result.error)
       }
-      const result = await this.api.call('upload/commit', { id: entry.id, sha256: await digest(bytes) })
+      const result = await this.api.call('upload/commit', { id: entry.id, sha256 })
       if (result.error) throw Error(result.error)
       this.uploads.set(id, entry.id); this.uploads.set(nativeId, entry.id); this.native.set(entry.id, nativeId)
       await this.vault.delete(`${this.sessionId}:${id}`)

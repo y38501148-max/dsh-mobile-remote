@@ -7,6 +7,7 @@ export const READ_METHODS = new Set([
   'workspace.list', 'host.describe', 'agentPreset.list', 'llm.providers', 'llm.models',
   'skill.list', 'subagent.list', 'subagent.history', 'credentials.describe',
   'commands/list', 'pluginInventory/list', 'messageFeedback/list',
+  'projectFiles/search', 'settings.describe',
 ])
 export const WRITE_METHODS = new Set([
   'session.create', 'session.prompt', 'session.cancel', 'session.rename', 'session.fork',
@@ -20,7 +21,7 @@ export const WRITE_METHODS = new Set([
 export const ADMIN_METHODS = new Set([
   'agentPreset.read', 'agentPreset.copy', 'agentPreset.remove', 'agentPreset.openDocument',
   'host.openPath', 'host.pickDirectory', 'host.listDirectory', 'host.createDirectory',
-  'settings.describe', 'settings.update', 'settings.replace', 'settings.mutate',
+  'settings.update', 'settings.replace', 'settings.mutate',
   'settings.openDocument', 'llm.discoverModels',
   'dynamicCordisRunner/getClientCode', 'dynamicCordisRunner/inventory', 'dynamicCordisRunner/invoke',
   'dynamicCordisRunner/reportClientGuardFailure', 'dynamicCordisRunner/reportRenderFailure',
@@ -42,6 +43,7 @@ export function authorizeRoute(raw, method, role) {
   if (path.startsWith('/api/')) {
     const rpc = path.slice(5)
     if (method !== 'POST') return undefined
+    if (rpc === 'settings.mutate' && role !== 'admin') return { kind: 'rpc', rpc, write: true, guard: 'onboarding' }
     if (READ_METHODS.has(rpc)) return { kind: 'rpc', rpc, write: false }
     if (WRITE_METHODS.has(rpc) && role !== 'viewer') return { kind: 'rpc', rpc, write: true }
     if (ADMIN_METHODS.has(rpc) && role === 'admin') return { kind: 'rpc', rpc, write: true }
@@ -50,4 +52,10 @@ export function authorizeRoute(raw, method, role) {
   if (method !== 'GET' && method !== 'HEAD') return undefined
   if (path === '/' || path === '/index.html' || path === '/favicon.ico' || path === '/favicon.svg' || /^\/assets\/[a-zA-Z0-9_.\/-]+$/.test(path) || /^\/plugins\/[a-zA-Z0-9_@.\/-]+\/(?:client\.js|client\.css)$/.test(path)) return { kind: 'asset' }
   return undefined
+}
+
+export function validateRoutePayload(route, envelope) {
+  if (route.guard !== 'onboarding') return
+  const p = envelope.payload, op = p?.ops?.[0]
+  check(p?.ns === 'ui-onboarding' && Array.isArray(p.ops) && p.ops.length === 1 && op?.op === 'set' && Array.isArray(op.path) && op.path.length === 1 && op.path[0] === 'welcomeNoticeVersion' && op.value === '2026-08-13.1' && Object.keys(op).length === 3, 'settings-write-not-authorized', 403)
 }

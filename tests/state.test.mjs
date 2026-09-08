@@ -51,3 +51,29 @@ test('draft bounds and unsupported upload references fail explicitly', () => {
   drafts.write({ sessionId: 's', expectedRevision: 0, text: 'a' })
   assert.throws(() => drafts.write({ sessionId: 'next', expectedRevision: 0, text: 'a' }), /draft-limit/)
 })
+test('approved authorization expires on the Host and closes every live transport', () => {
+  let now = 1000
+  const devices = new Devices({ now: () => now, lifetimeMs: 5000 })
+  try {
+    const phone = devices.claim(devices.invite().code, 'phone'); devices.approve(phone.deviceId)
+    let closed = 0
+    devices.attach(phone.credential, () => closed++)
+    devices.attach(phone.credential, () => closed++)
+    assert.equal(devices.list()[0].connected, true)
+    assert.equal(devices.list()[0].expiresAt, 6000)
+    now = 6000
+    assert.throws(() => devices.authenticate(phone.credential), /unauthorized/)
+    assert.equal(closed, 2); assert.deepEqual(devices.list(), [])
+  } finally { devices.dispose() }
+})
+test('reading position and disclosure state follow the controller lease with bounded payloads', async () => {
+  const { Follow } = await import('../src/sync/follow.js')
+  const follow = new Follow({ now: () => 0 })
+  const reading = { anchor: 'turn:12', offset: -40, ratio: 0.4, expanded: [{ anchor: 'turn:12', index: 0, open: true }] }
+  const result = follow.update({ deviceId: 'a', expectedRevision: 0, sessionId: 's', reading })
+  assert.deepEqual(result.state.reading, reading)
+  reading.expanded[0].open = false
+  assert.equal(follow.read().reading.expanded[0].open, true)
+  assert.equal(follow.update({ deviceId: 'b', expectedRevision: 1, sessionId: 's' }).error, 'lease-held')
+  assert.throws(() => follow.update({ deviceId: 'a', expectedRevision: 1, sessionId: 's', reading: { ...reading, ratio: Infinity } }), /invalid-reading/)
+})

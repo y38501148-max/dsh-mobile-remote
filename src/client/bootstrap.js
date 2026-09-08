@@ -5,16 +5,20 @@
   let session
   const ready = originalFetch('/remote/session').then(async response => {
     if (!response.ok) { location.replace('/remote/pair'); throw Error('device authorization required') }
-    session = await response.json(); return session
+    session = await response.json(); if (session.protocolVersion !== 1) throw Error('手机协议版本不兼容，请刷新或更新插件。'); return session
   })
+  document.addEventListener('beforeinput', event => { if (session?.role === 'viewer' && event.target.closest?.('[data-composer-seat]')) event.preventDefault() }, true)
   const writeMethods = new Set(WRITE_METHODS_PLACEHOLDER)
+  const pluginWrites = new Set(PLUGIN_WRITES_PLACEHOLDER)
   window.fetch = async (input, options) => {
     const request = new Request(input, options)
     const url = new URL(request.url)
-    if (url.origin === location.origin && request.method === 'POST' && writeMethods.has(url.pathname.slice(5))) {
+    if (url.origin === location.origin && request.method === 'POST' && (writeMethods.has(url.pathname.slice(5)) || pluginWrites.has(url.pathname))) {
       await ready
       const headers = new Headers(request.headers)
       headers.set('x-dsh-host-epoch', session.hostEpoch)
+      headers.set('x-dsh-mobile-protocol', '1')
+      if (pluginWrites.has(url.pathname) && !headers.has('x-dsh-command-id')) headers.set('x-dsh-command-id', crypto.randomUUID())
       const response = await originalFetch(new Request(request, { headers }))
       if (response.status === 401) location.assign('/remote/pair')
       if (response.status === 409) {
@@ -30,7 +34,7 @@
   function announce(text) {
     if (!label) {
       label = document.createElement('div'); label.id = 'dsh-remote-status'; label.setAttribute('role', 'status')
-      Object.assign(label.style, { position: 'fixed', bottom: 'env(safe-area-inset-bottom, 0px)', left: '0', right: '0', padding: '8px', background: '#28334c', color: 'white', zIndex: '10000', textAlign: 'center', font: '13px system-ui' })
+      Object.assign(label.style, { pointerEvents: 'none', position: 'fixed', bottom: 'env(safe-area-inset-bottom, 0px)', left: '0', right: '0', padding: '8px', background: '#28334c', color: 'white', zIndex: '10000', textAlign: 'center', font: '13px system-ui' })
       document.body.append(label)
     }
     label.textContent = text; label.hidden = false

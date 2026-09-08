@@ -3,19 +3,21 @@ import { request as httpRequest } from 'node:http'
 import { readFileSync } from 'node:fs'
 import WebSocket, { WebSocketServer } from 'ws'
 import { check } from '../auth/devices.js'
-import { authorizeRoute, canonicalPath, STREAM_PATHS, WRITE_METHODS, ADMIN_METHODS } from './policy.js'
+import { authorizeRoute, validateRoutePayload, canonicalPath, STREAM_PATHS, WRITE_METHODS, ADMIN_METHODS } from './policy.js'
 import { mobileIndex } from './html.js'
 import { PWA_RESOURCES } from './pwa.js'
 import { credentialFrom, failure, jsonBody, parseBody, readBody, reply, sessionCookie } from './http.js'
+import { PLUGIN_ROUTES, PLUGIN_WRITES, quotaView } from '../compat/routes.js'
 
-const BOOTSTRAP = readFileSync(new URL('../client/bootstrap.js', import.meta.url), 'utf8').replace('WRITE_METHODS_PLACEHOLDER', JSON.stringify([...WRITE_METHODS, ...ADMIN_METHODS]))
+const BOOTSTRAP = readFileSync(new URL('../client/bootstrap.js', import.meta.url), 'utf8').replace('WRITE_METHODS_PLACEHOLDER', JSON.stringify([...WRITE_METHODS, ...ADMIN_METHODS])).replace('PLUGIN_WRITES_PLACEHOLDER', JSON.stringify(PLUGIN_WRITES))
 const PAIR_HTML = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>连接 DeepSeek Harness</title><style>body{font:17px system-ui;background:#f7f8fc;color:#18213a;max-width:440px;margin:10vh auto;padding:24px}input,button{box-sizing:border-box;width:100%;font:inherit;padding:14px;margin:10px 0;border:1px solid #b9c4d5;border-radius:12px}button{background:#345bea;color:white}#status{white-space:pre-wrap}</style><h1>连接你的电脑</h1><p>在电脑端生成邀请，扫码或输入邀请码。随后在电脑确认此设备。</p><form id="pair"><label>设备名称<input id="name" maxlength="80" value="我的手机" required></label><label>邀请码<input id="code" required autocomplete="off"></label><button>请求连接</button></form><p id="status" role="status"></p><script src="/remote/pair.js"></script></html>`
 const PAIR_JS = `const status=document.querySelector('#status');const code=document.querySelector('#code');code.value=new URLSearchParams(location.hash.slice(1)).get('invite')||'';history.replaceState(null,'',location.pathname);let timer;async function poll(){try{const r=await fetch('/remote/session');const v=await r.json();if(r.ok&&v.state==='approved'){location.replace('/');return}if(r.ok){status.textContent='等待电脑确认设备…';timer=setTimeout(poll,1500)}else status.textContent='连接已失效，请在电脑生成新邀请。'}catch{status.textContent='连接中断，正在重试…';timer=setTimeout(poll,3000)}}document.querySelector('#pair').onsubmit=async e=>{e.preventDefault();clearTimeout(timer);try{const r=await fetch('/remote/claim',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:code.value,name:document.querySelector('#name').value})});const v=await r.json();if(!r.ok)throw Error(v.error);code.value='';poll()}catch(e){status.textContent='连接失败：'+e.message}};poll();`
 
 export class Gateway {
-  constructor({ hostPort, epoch, devices, commands, shared = {}, reconcile, cert, key, publicOrigin, bind = '127.0.0.1', port = 0 }) {
+  constructor({ hostPort, epoch, devices, commands, shared = {}, resources, reconcile, cert, key, publicOrigin, bind = '127.0.0.1', port = 0 }) {
     this.hostPort = hostPort; this.epoch = epoch; this.devices = devices; this.commands = commands; this.shared = shared
     this.reconcile = reconcile
+    this.resources = resources
     this.origin = publicOrigin; this.bind = bind; this.port = port
     const origin = new URL(publicOrigin)
     check(origin.protocol === 'https:' && origin.origin === publicOrigin && !origin.username && !origin.password, 'https-origin-required')
@@ -74,9 +76,11 @@ export class Gateway {
     }
     if (path === '/remote/session' && req.method === 'GET') { reply(res, 200, { ...this.devices.identify(credential, true), hostEpoch: this.epoch, protocolVersion: 1 }); return }
     const device = this.devices.identify(credential)
+    check(req.headers['x-dsh-mobile-protocol'] === undefined || req.headers['x-dsh-mobile-protocol'] === '1', 'protocol-version-mismatch', 409)
     if (path === '/remote/bootstrap.js' && req.method === 'GET') { res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' }); res.end(BOOTSTRAP); return }
     const detach = this.devices.attach(credential, () => res.destroy())
     res.once('close', detach)
+    if (path.startsWith('/remote/resource/') && ['GET', 'HEAD'].includes(req.method)) { await this.resources.serve(path.slice('/remote/resource/'.length), device.deviceId, req, res); return }
     if (path === '/remote/logout' && req.method === 'POST') {
       reply(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', 0) }); return
     }
@@ -89,6 +93,18 @@ export class Gateway {
       const result = await operation(p, device)
       reply(res, result?.ok === false ? 409 : 200, result); return
     }
+    const plugin = PLUGIN_ROUTES.get(path)
+    if (plugin) {
+      check(req.method === plugin.method && (plugin.role === 'viewer' || device.role === 'admin'), 'plugin-route-not-authorized', 403)
+      let response
+      if (req.method === 'POST') {
+        check(req.headers['x-dsh-host-epoch'] === this.epoch, 'host-epoch-mismatch', 409)
+        const bytes = await readBody(req, 96 * 1024)
+        response = await this.commands.execute(device.deviceId, req.headers['x-dsh-command-id'], Buffer.concat([Buffer.from(path + '\0'), bytes]), () => this.forwardBuffered(req, bytes))
+      } else response = await this.forwardBuffered(req)
+      if (plugin.sanitize === 'quota' && response.status === 200) response.body = JSON.stringify(quotaView(JSON.parse(response.body)))
+      res.writeHead(response.status, { ...response.headers, 'cache-control': 'no-store' }); res.end(response.body); return
+    }
     const route = authorizeRoute(req.url, req.method, device.role)
     check(route, 'route-not-authorized', 403)
     check(route.kind !== 'stream', 'websocket-required', 426)
@@ -98,6 +114,7 @@ export class Gateway {
       const envelope = parseBody(bytes)
       check(req.headers['content-type']?.split(';')[0] === 'application/json', 'json-required', 415)
       check(route.rpc === 'respond' ? envelope.type === 'client-response' : envelope.method === route.rpc, 'method-mismatch')
+      validateRoutePayload(route, envelope)
       this.devices.identify(credential)
       if (route.write) {
         check(req.headers['x-dsh-host-epoch'] === this.epoch, 'host-epoch-mismatch', 409)

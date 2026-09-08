@@ -11,20 +11,28 @@ export async function fullHost(options = {}) {
   const scope = join(sandbox, 'node_modules', '@muzermat')
   await mkdir(scope, { recursive: true })
   if (!options.sandbox) await symlink(root, join(scope, 'dsh-mobile-remote'), 'dir')
+  const setup = await options.setup?.(sandbox) ?? {}
+  if (options.clientProbe) {
+    const probe = join(scope, 'remote-test-probe'); await mkdir(probe, { recursive: true })
+    await writeFile(join(probe, 'package.json'), JSON.stringify({ name: '@muzermat/remote-test-probe', version: '0.0.0', type: 'module', main: 'index.js', exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' }, dsh: { client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-conversation'] } } }))
+    await writeFile(join(probe, 'index.js'), 'export function apply() {}')
+    await writeFile(join(probe, 'client.js'), `window.__ModuleLoader__.load({id:'@muzermat/remote-test-probe',factory:()=>({inject:['sessions','conversation','slots'],apply:ctx=>{window.__DSH_TEST_PROBE__=ctx;ctx.effect(()=>()=>{delete window.__DSH_TEST_PROBE__})}})});`)
+    setup.plugins ??= []; setup.plugins.push({ id: 'remote-test-probe', name: '@muzermat/remote-test-probe' })
+  }
   const mock = await startMockLlmServer({ sequence: ['slow_success'], repeatLast: true, successText: '手机与电脑共享同一个 Host。'.repeat(10), chunkSize: 5, chunkDelayMs: 10, ...options.mock })
   const preset = join(sandbox, '.agent-presets', 'remote-test')
   await mkdir(preset, { recursive: true })
   await writeFile(join(preset, 'preset.yml'), 'name: Remote test\ndescription: Synthetic local test only\n')
-  await writeFile(join(preset, 'agent.cordis.yml'), `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: Synthetic protocol test.\n    complete: true\n    includeRuntimeContext: false\n`)
+  await writeFile(join(preset, 'agent.cordis.yml'), JSON.stringify([{ id: 'persona', name: '@deepseek-ai/dsh-persona', config: { text: 'Synthetic protocol test.', complete: true, includeRuntimeContext: false } }, ...options.agentPlugins ?? []]))
   const patch = join(sandbox, 'overlay.yml')
   await writeFile(patch, JSON.stringify([
     { id: 'llm-deepseek', config: { baseURL: mock.baseURL, apiKeyEnv: 'REMOTE_TEST_KEY', thinking: 'disabled', streamIdleTimeoutMs: 5000 } },
     { id: 'session-title-llm', disabled: true },
     { id: 'agent-presets', config: { default: 'remote-test' } },
-    { insert: [{ id: 'mobile-remote', name: '@muzermat/dsh-mobile-remote', config: { statePath: join(sandbox, 'mobile-remote.json'), ...options.plugin } }] },
+    { insert: [...setup.plugins ?? [], { id: 'mobile-remote', name: '@muzermat/dsh-mobile-remote', config: { statePath: join(sandbox, 'mobile-remote.json'), ...options.plugin } }] },
   ]))
   const child = spawn(process.execPath, [join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), '--profile', 'web', '--patch', patch, '--port', '0'], {
-    cwd: sandbox, env: { PATH: process.env.PATH, DSH_HOME: sandbox, REMOTE_TEST_KEY: 'synthetic-no-real-credential', NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: sandbox, env: { PATH: process.env.PATH, DSH_HOME: sandbox, REMOTE_TEST_KEY: 'synthetic-no-real-credential', NO_COLOR: '1', ...setup.env }, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
   child.stdout.on('data', data => { output = (output + data).slice(-24000) })
