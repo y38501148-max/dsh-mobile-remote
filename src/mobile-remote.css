@@ -1,1 +1,17 @@
 .mr-settings{max-width:680px;display:flex;flex-direction:column;gap:12px;padding:8px}.mr-settings h2,.mr-settings h3{font-weight:650}.mr-settings label{display:flex;flex-direction:column;gap:6px;font-size:14px}.mr-settings input,.mr-settings select,.mr-modal input{width:100%;padding:10px;border:1px solid #8898b366;border-radius:8px;background:transparent;color:inherit;box-sizing:border-box}.mr-button{border:1px solid #8898b355;border-radius:8px;padding:6px 10px;margin:3px;font:inherit;color:inherit;cursor:pointer;background:#809ac412}.mr-button:hover{background:#809ac42c}.mr-button:disabled{opacity:.5;cursor:default}.mr-error{color:#c74836}.mr-device{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-top:1px solid #8898b333;padding-top:10px}.mr-draft{font-size:12px;color:#71829d;padding:4px 12px}.mr-draft pre{white-space:pre-wrap;max-height:220px;overflow:auto;color:inherit}.mr-modal-backdrop{position:fixed;inset:0;background:#0006;z-index:15000;display:grid;place-items:center;padding:18px}.mr-modal{background:Canvas;color:CanvasText;border-radius:16px;padding:20px;width:min(520px,100%);max-height:85dvh;overflow:auto}.mr-directories{display:flex;flex-direction:column;max-height:45dvh;overflow:auto;margin:12px 0}.mr-directories button{text-align:left}@media(max-width:700px){.mr-settings{padding:4px;max-width:100%}.mr-settings input,.mr-modal input{font-size:16px}.mr-button{min-height:36px}.mr-settings img{max-width:100%;height:auto}}
+/* Verified rc.6 native layout adapter; no business state is read from the DOM. */
+@media(max-width:700px){
+  .wSkVaW_heroWorkspaceRow{flex-wrap:wrap!important;gap:8px!important;padding-inline:12px!important;box-sizing:border-box}
+  .pXSMma_workspace{min-width:0!important;max-width:100%!important}
+  .pXSMma_workspaceLabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wSkVaW_titleRow{flex-wrap:wrap!important;gap:8px!important;align-items:flex-start!important}
+  .wSkVaW_headerUtilities{position:static!important;flex-wrap:wrap!important;max-width:100%;margin-left:0!important}
+  .wSkVaW_header{padding-inline:12px!important}
+  .uV2eYG_row{flex-wrap:wrap!important;gap:6px!important}
+  .uV2eYG_trailing{min-width:0!important;flex:1 1 auto;justify-content:flex-end;max-width:100%}
+  ._7KE1Ra_root{min-width:0;max-width:calc(100vw - 220px)}
+  ._7KE1Ra_trigger{min-width:0!important;max-width:100%;overflow:hidden}
+  ._7KE1Ra_triggerLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .uV2eYG_input{font-size:16px!important}
+  .mr-draft{overflow-wrap:anywhere}
+}

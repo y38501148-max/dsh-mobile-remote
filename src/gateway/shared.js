@@ -1,7 +1,15 @@
 import { browseDirectory } from './directory.js'
 import { check } from '../auth/devices.js'
-export function sharedOperations({ drafts, follow, commands, store }) {
+export function sharedOperations({ drafts, follow, commands, store, uploads, push }) {
   return {
+    'push/key': () => push.key(),
+    'push/status': (p, d) => push.status(d.deviceId),
+    'push/subscribe': (p, d) => push.subscribe(d.deviceId, p.subscription),
+    'push/unsubscribe': (p, d) => push.remove(d.deviceId),
+    'upload/begin': (p, d) => { check(d.role !== 'viewer', 'read-only', 403); return uploads.begin(p, d.deviceId) },
+    'upload/chunk': (p, d) => { check(d.role !== 'viewer', 'read-only', 403); return uploads.chunk(p, d.deviceId) },
+    'upload/commit': (p, d) => { check(d.role !== 'viewer', 'read-only', 403); return uploads.commit(p, d.deviceId) },
+    'upload/read': (p, d) => uploads.read(p, d.deviceId),
     'directory/list': (p, device) => { check(device.role === 'admin', 'admin-required', 403); return browseDirectory(p.path) },
     'draft/read': (p, device) => drafts.read(p.sessionId),
     'draft/write': (p, device) => { check(device.role !== 'viewer', 'read-only', 403); return drafts.write({ ...p, deviceId: device.deviceId }) },

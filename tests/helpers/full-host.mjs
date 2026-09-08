@@ -7,10 +7,10 @@ import { startMockLlmServer } from '@deepseek-ai/dsh-llm-mock-server'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 export async function fullHost(options = {}) {
-  const sandbox = await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
+  const sandbox = options.sandbox ?? await mkdtemp(join(tmpdir(), 'dsh-remote-test-'))
   const scope = join(sandbox, 'node_modules', '@muzermat')
   await mkdir(scope, { recursive: true })
-  await symlink(root, join(scope, 'dsh-mobile-remote'), 'dir')
+  if (!options.sandbox) await symlink(root, join(scope, 'dsh-mobile-remote'), 'dir')
   const mock = await startMockLlmServer({ sequence: ['slow_success'], repeatLast: true, successText: '手机与电脑共享同一个 Host。'.repeat(10), chunkSize: 5, chunkDelayMs: 10, ...options.mock })
   const preset = join(sandbox, '.agent-presets', 'remote-test')
   await mkdir(preset, { recursive: true })
@@ -29,14 +29,14 @@ export async function fullHost(options = {}) {
   let output = ''
   child.stdout.on('data', data => { output = (output + data).slice(-24000) })
   child.stderr.on('data', data => { output = (output + data).slice(-24000) })
-  const stop = async () => {
+  const stop = async ({ preserve = false, signal = 'SIGTERM' } = {}) => {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = new Promise(resolve => child.once('exit', resolve))
-      child.kill('SIGTERM')
+      child.kill(signal)
       const timer = setTimeout(() => child.kill('SIGKILL'), 5000)
       await exited; clearTimeout(timer)
     }
-    await mock.close(); await rm(sandbox, { recursive: true, force: true })
+    await mock.close(); if (!preserve) await rm(sandbox, { recursive: true, force: true })
   }
   try {
     const origin = await new Promise((resolve, reject) => {

@@ -1,5 +1,6 @@
 import React from 'react'
 import QRCode from 'qrcode'
+import { SharedImages } from './client/images.js'
 import { RemoteApi, DraftClient } from './client/sync-client.js'
 const h = React.createElement
 const remote = !!window.__DSH_REMOTE__
@@ -17,8 +18,10 @@ function Settings({ service }) {
   const [status, setStatus] = React.useState(null), [devices, setDevices] = React.useState([]), [error, setError] = React.useState(''), [busy, setBusy] = React.useState(false)
   const [config, setConfig] = React.useState({ publicOrigin: '', certPath: '', keyPath: '', bind: '0.0.0.0', port: 8443 })
   const [invitation, setInvitation] = React.useState(null), [qr, setQr] = React.useState('')
+  const [notifications, setNotifications] = React.useState(null)
   const refresh = React.useCallback(async () => {
     const current = await service.api.status(); setStatus(current)
+    if (remote) setNotifications(await service.api.call('push/status'))
     if (!remote) {
       const res = await fetch('/api/plugin/mobile-remote/devices'); const value = await res.json()
       if (!res.ok) throw Error(value.error); setDevices(value.devices)
@@ -32,18 +35,30 @@ function Settings({ service }) {
     const url = `${status.remoteOrigin}/remote/pair#invite=${encodeURIComponent(value.code)}`
     setInvitation({ ...value, url }); setQr(await QRCode.toDataURL(url, { width: 240, margin: 2 }))
   })
+  const enableNotifications = () => run(async () => {
+    if (!('Notification' in window) || !('PushManager' in window) || !navigator.serviceWorker) throw Error('当前浏览器不支持推送。iPhone 请先将此网页添加到主屏幕，再从主屏幕打开。')
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') throw Error('通知权限未开启，可在浏览器设置中调整。')
+    const { publicKey } = await service.api.call('push/key')
+    const registration = await navigator.serviceWorker.ready
+    const applicationServerKey = Uint8Array.from(atob(publicKey.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))
+    const subscription = await registration.pushManager.getSubscription() ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })
+    await call('push/subscribe', { subscription: subscription.toJSON() })
+  })
   return h('section', { className: 'mr-settings' },
     h('h2', null, '手机远程'),
     h('p', { role: 'status' }, remote ? `已连接 · ${status?.name || ''} · ${status?.role || ''}` : status?.enabled ? `远程入口已开启：${status.remoteOrigin}` : '远程入口已关闭'),
     error && h('p', { className: 'mr-error', role: 'alert' }, error),
     !remote && h(React.Fragment, null,
       h('p', null, '手机连接当前电脑 Host，共享会话和执行队列。请使用手机可验证的 HTTPS 证书。'),
-      ...[['publicOrigin', 'HTTPS 地址', 'https://your-host.example:8443'], ['certPath', '证书文件路径', '/path/fullchain.pem'], ['keyPath', '私钥文件路径', '/path/privkey.pem']].map(([key, label, placeholder]) => h('label', { key }, label, h('input', { value: config[key], placeholder, onChange: e => setConfig({ ...config, [key]: e.target.value }) }))),
+      ...[['publicOrigin', 'HTTPS 地址', 'https://your-host.example:8443'], ['certPath', '证书文件路径', '/path/fullchain.pem'], ['keyPath', '私钥文件路径', '/path/privkey.pem'], ['relayUrl', '中继控制地址（可选）', 'wss://relay.example:8443/relay/control'], ['relayTokenPath', '中继令牌文件（可选）', '/path/relay-token']].map(([key, label, placeholder]) => h('label', { key }, label, h('input', { value: config[key] ?? '', placeholder, onChange: e => setConfig({ ...config, [key]: e.target.value }) }))),
       h('label', null, '监听端口', h('input', { type: 'number', value: config.port, min: 1, max: 65535, onChange: e => setConfig({ ...config, port: Number(e.target.value) }) })),
       h('label', null, '连接方式', h('select', { value: config.bind, onChange: e => setConfig({ ...config, bind: e.target.value }) }, h('option', { value: '0.0.0.0' }, '私人网络直连'), h('option', { value: '127.0.0.1' }, '仅本机测试'))),
       h(Button, { disabled: busy, onClick: () => run(() => call(status?.enabled ? 'gateway/disable' : 'gateway/enable', config)) }, status?.enabled ? '关闭远程入口' : '开启远程入口'),
+      status?.keepAwake?.supported && h(Button, { disabled: busy || !status?.enabled, onClick: () => run(() => call('keep-awake/set', { enabled: !status.keepAwake.enabled })) }, status.keepAwake.enabled ? '关闭防空闲休眠' : '远控期间防止电脑空闲休眠'),
       h(Button, { disabled: busy || !status?.enabled, onClick: invite }, '生成配对二维码'),
       invitation && h('div', null, h('p', null, `邀请有效至 ${new Date(invitation.expiresAt).toLocaleTimeString()}，仅可使用一次。`), h('img', { src: qr, alt: '手机配对二维码', width: 240, height: 240 }), h('input', { readOnly: true, value: invitation.url, 'aria-label': '配对链接' })),
+      h('p', null, `中继：${status?.relayState || 'disabled'}`),
       h('h3', null, '设备'),
       ...devices.map(device => h('div', { className: 'mr-device', key: device.deviceId },
         h('strong', null, device.name), h('span', null, device.state === 'pending' ? '等待电脑确认' : `已授权 · ${device.role}`),
@@ -57,10 +72,16 @@ function Settings({ service }) {
     h(Button, { onClick: () => service.setFollow(!service.following) }, service.following ? '退出跟随' : '跟随另一端'),
     h(Button, { onClick: () => service.takeControl().catch(e => setError(e.message)) }, '接管会话与面板联动'),
     h('p', null, service.message),
+    remote && h(React.Fragment, null,
+      h('h3', null, '后台通知'),
+      h('p', null, notifications?.enabled ? '任务结束、审批和提问会发送通用提醒，通知不含会话正文。' : '通知尚未开启。手机后台暂停网页时，可通过系统推送收到任务提醒。'),
+      h(Button, { disabled: busy, onClick: enableNotifications }, '开启此设备通知'),
+      notifications?.enabled && h(Button, { disabled: busy, onClick: () => run(async () => { await call('push/unsubscribe'); const registration = await navigator.serviceWorker.ready; await (await registration.pushManager.getSubscription())?.unsubscribe() }) }, '关闭此设备通知')),
     remote && h(Button, { onClick: async () => { await fetch('/remote/logout', { method: 'POST' }); location.assign('/remote/pair') } }, '退出连接'))
 }
 function DraftDock({ service, sessionId }) {
   useTick(service)
+  React.useEffect(() => { service.ensureClient(sessionId) }, [service, sessionId])
   const client = service.clients.get(sessionId)
   if (!client) return null
   const state = client.state
@@ -71,10 +92,15 @@ function DraftDock({ service, sessionId }) {
       h(Button, { onClick: () => act(() => client.flush(true)) }, '接管并使用本机草稿'),
       h(Button, { onClick: () => act(() => client.useRemote()) }, '使用共享草稿'),
       state.remote && h('details', null, h('summary', null, '查看共享草稿'), h('pre', null, state.remote.text))),
-    state.conflicts.length > 0 && h('details', null, h('summary', null, `保留的冲突副本（${state.conflicts.length}）`), ...state.conflicts.map(copy => h('div', { key: copy.id }, h('pre', null, copy.text), h(Button, { onClick: () => { client.apply(copy); client.dirty = true; client.persist(); client.publish({ status: 'conflict', message: '副本已载入，请接管后同步。' }) } }, '载入副本'), h(Button, { onClick: () => act(async () => { await service.api.call('draft/resolve', { sessionId, conflictId: copy.id }); await client.refresh() }) }, '删除此副本')))))
+    state.conflicts.length > 0 && h('details', null, h('summary', null, `保留的冲突副本（${state.conflicts.length}）`), ...state.conflicts.map(copy => h('div', { key: copy.id }, h('pre', null, copy.text), h(Button, { onClick: () => act(async () => { await client.images?.load(copy); client.apply(copy); client.dirty = true; client.persist(); client.publish({ status: 'conflict', message: '副本已载入，请接管后同步。' }) }) }, '载入副本'), h(Button, { onClick: () => act(async () => { await service.api.call('draft/resolve', { sessionId, conflictId: copy.id }); await client.refresh() }) }, '删除此副本')))))
 }
-function FollowButton({ service }) {
+function FollowButton({ service, sessionId, useStore, actions }) {
   useTick(service)
+  const view = useStore(state => state.view), selection = useStore(state => state.selection)
+  React.useEffect(() => {
+    service.viewChanged(sessionId, { view, selection, actions })
+  }, [service, sessionId, view, selection, actions])
+  React.useEffect(() => () => service.views.delete(sessionId), [service, sessionId])
   return h(Button, { title: service.message, onClick: () => service.following ? service.takeControl().catch(e => service.note(e.message)) : service.setFollow(true) }, service.following ? '双端联动' : '独立浏览')
 }
 function DirectoryFlow({ open, busy, onPicked, onCancel, service }) {
@@ -93,31 +119,43 @@ function DirectoryFlow({ open, busy, onPicked, onCancel, service }) {
 
 class SyncService {
   constructor(ctx) {
-    this.ctx = ctx; this.api = new RemoteApi({ remote, clientId }); this.clients = new Map(); this.listeners = new Set(); this.following = true; this.message = ''; this.followState = null; this.applying = false
+    this.ctx = ctx; this.api = new RemoteApi({ remote, clientId }); this.clients = new Map(); this.views = new Map(); this.appliedViews = new Map(); this.listeners = new Set(); this.following = true; this.message = ''; this.followState = null; this.applying = false
   }
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn) }
   note(message) { this.message = message; this.emit() }
   emit() { for (const fn of this.listeners) fn() }
   current() { return this.ctx.sessions.list.getSnapshot().current ?? null }
+  ensureClient(current) {
+    if (!current || this.clients.has(current)) return
+    const scope = this.ctx.sessions.scope(current)
+    if (!scope) return
+    this.clients.set(current, new DraftClient({ images: new SharedImages(this.api, current, this.ctx.conversation, message => this.note(message)), api: this.api, sessionId: current, input: this.ctx.conversation.input.for(scope), storage: sessionStorage, changed: () => this.emit() }))
+    this.emit()
+  }
   attach() {
     const current = this.current()
-    if (current && !this.clients.has(current)) {
-      const scope = this.ctx.sessions.scope(current)
-      if (scope) this.clients.set(current, new DraftClient({ api: this.api, sessionId: current, input: this.ctx.conversation.input.for(scope), storage: sessionStorage, changed: () => this.emit() }))
-    }
     if (!this.applying && current !== this.lastCurrent) {
       this.lastCurrent = current
       if (this.following && this.followState) this.publishFollow(false).catch(e => this.note(e.message))
     }
   }
   setFollow(value) { this.following = value; this.note(value ? '跟随已开启' : '独立浏览，不改变另一端位置'); if (value) this.pollFollow() }
-  async publishFollow(takeover, panel = 'chat') {
+  viewChanged(sessionId, value) {
+    const previous = this.views.get(sessionId)
+    this.views.set(sessionId, value)
+    const signature = JSON.stringify({ view: value.view ?? 'chat', selection: value.selection })
+    if (previous && signature === JSON.stringify({ view: previous.view ?? 'chat', selection: previous.selection })) return
+    if (this.appliedViews.get(sessionId) === signature) { this.appliedViews.delete(sessionId); return }
+    if (previous && this.following && sessionId === this.current()) this.publishFollow(false).catch(e => this.note(e.message))
+  }
+  async publishFollow(takeover, panel) {
     const current = await this.api.call('follow/read')
-    const result = await this.api.call('follow/update', { expectedRevision: current.revision, sessionId: this.current(), panel, takeover })
-    if (!result.ok) { this.following = false; this.note('另一设备正在控制联动，已保留你的浏览位置。点击接管可重新联动。'); return }
+    const view = this.views.get(this.current())
+    const result = await this.api.call('follow/update', { expectedRevision: current.revision, sessionId: this.current(), panel: panel ?? (view?.view === 'trajectory' ? 'trajectory' : view?.selection ? 'details' : 'chat'), selection: view?.selection ?? null, takeover })
+    if (!result.ok) { this.followState = result.current; this.note('另一设备正在控制联动；点击接管可控制位置，或在设置中退出跟随。'); return }
     this.followState = result.state; this.note('由此设备控制联动')
   }
-  async takeControl(panel = 'chat') { this.following = true; await this.publishFollow(true, panel) }
+  async takeControl(panel) { this.following = true; await this.publishFollow(true, panel) }
   async pollFollow() {
     try {
       const state = await this.api.call('follow/read')
@@ -127,6 +165,13 @@ class SyncService {
       try {
         if (state.sessionId && this.current() !== state.sessionId && this.ctx.sessions.list.getSnapshot().byId[state.sessionId]) this.ctx.sessions.open(state.sessionId)
         if (state.sessionId === null && this.current()) this.ctx.sessions.clear()
+        const view = this.views.get(state.sessionId)
+        if (view) {
+          const next = { view: state.panel === 'trajectory' ? 'trajectory' : 'chat', selection: state.selection ?? null }
+          this.appliedViews.set(state.sessionId, JSON.stringify(next))
+          if ((view.view ?? 'chat') !== next.view) view.actions.setView(next.view)
+          if (JSON.stringify(view.selection) !== JSON.stringify(next.selection)) view.actions.select(next.selection)
+        }
         if (state.panel === 'details') this.ctx.layout.openDetails(); else this.ctx.layout.closeDetails()
         this.lastCurrent = this.current()
       } finally { this.applying = false }
@@ -160,6 +205,10 @@ export function apply(ctx) {
   }, 'mobile-remote: input and navigation synchronization')
   ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'mobile-remote', order: 90, label: () => '手机远程', inject: () => ({ service }) }, Settings))
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({ name: 'conversation.input.dock', id: 'mobile-remote-draft', order: 100, inject: () => ({ service }) }, DraftDock))
-  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({ name: 'conversation.session.header.utilities', id: 'mobile-remote-follow', inject: () => ({ service }) }, FollowButton))
+  ctx.slots.inject('conversation.session.header.utilities', () => {
+    const store = ctx.slots.entries('conversation.session.header')[0]?.store
+    if (!store) { service.note('当前会话插件未公开面板状态，面板联动需要适配。'); return }
+    return ctx.slots.register({ name: 'conversation.session.header.utilities', id: 'mobile-remote-follow', store, inject: () => ({ service }) }, FollowButton)
+  })
   if (remote) for (const name of ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow']) ctx.slots.inject(name, () => ctx.slots.register({ name, inject: () => ({ service }) }, DirectoryFlow))
 }

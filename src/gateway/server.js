@@ -13,8 +13,9 @@ const PAIR_HTML = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta
 const PAIR_JS = `const status=document.querySelector('#status');const code=document.querySelector('#code');code.value=new URLSearchParams(location.hash.slice(1)).get('invite')||'';history.replaceState(null,'',location.pathname);let timer;async function poll(){try{const r=await fetch('/remote/session');const v=await r.json();if(r.ok&&v.state==='approved'){location.replace('/');return}if(r.ok){status.textContent='等待电脑确认设备…';timer=setTimeout(poll,1500)}else status.textContent='连接已失效，请在电脑生成新邀请。'}catch{status.textContent='连接中断，正在重试…';timer=setTimeout(poll,3000)}}document.querySelector('#pair').onsubmit=async e=>{e.preventDefault();clearTimeout(timer);try{const r=await fetch('/remote/claim',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:code.value,name:document.querySelector('#name').value})});const v=await r.json();if(!r.ok)throw Error(v.error);code.value='';poll()}catch(e){status.textContent='连接失败：'+e.message}};poll();`
 
 export class Gateway {
-  constructor({ hostPort, epoch, devices, commands, shared = {}, cert, key, publicOrigin, bind = '127.0.0.1', port = 0 }) {
+  constructor({ hostPort, epoch, devices, commands, shared = {}, reconcile, cert, key, publicOrigin, bind = '127.0.0.1', port = 0 }) {
     this.hostPort = hostPort; this.epoch = epoch; this.devices = devices; this.commands = commands; this.shared = shared
+    this.reconcile = reconcile
     this.origin = publicOrigin; this.bind = bind; this.port = port
     const origin = new URL(publicOrigin)
     check(origin.protocol === 'https:' && origin.origin === publicOrigin && !origin.username && !origin.password, 'https-origin-required')
@@ -100,7 +101,7 @@ export class Gateway {
       this.devices.identify(credential)
       if (route.write) {
         check(req.headers['x-dsh-host-epoch'] === this.epoch, 'host-epoch-mismatch', 409)
-        const response = await this.commands.execute(device.deviceId, envelope.rpcId, bytes, () => this.forwardBuffered(req, bytes))
+        const response = await this.commands.execute(device.deviceId, envelope.rpcId, bytes, () => this.forwardBuffered(req, bytes), () => this.reconcile?.(envelope))
         res.writeHead(response.status, { ...response.headers, 'cache-control': 'no-store' }); res.end(response.body); return
       }
     }

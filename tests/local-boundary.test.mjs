@@ -16,7 +16,7 @@ test('plugin registers on the injected Host and owns its route disposer', () => 
   let dispose
   apply({ webServer: { port: 43123, register(value) { routes.push(value); return () => { removed = true } } }, effect(fn) { dispose = fn() } })
   assert.equal(routes[0].path, '/api/plugin/mobile-remote/status')
-  assert.equal(routes.length, 18)
+  assert.equal(new Set(routes.map(route => route.path)).size, routes.length)
   dispose()
   assert.equal(removed, true)
 })

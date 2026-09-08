@@ -7,7 +7,7 @@ import { check } from '../auth/devices.js'
 export class Commands {
   #pending = new Map()
   constructor(store, epoch) { this.store = store; this.epoch = epoch }
-  async execute(deviceId, commandId, bytes, dispatch) {
+  async execute(deviceId, commandId, bytes, dispatch, reconcile) {
     check(typeof commandId === 'string' && commandId.length > 0 && commandId.length <= 128, 'invalid-command-id')
     const key = createHash('sha256').update(`${deviceId}\0${commandId}`).digest('hex')
     const hash = createHash('sha256').update(bytes).digest('hex')
@@ -16,6 +16,13 @@ export class Commands {
       check(prior.hash === hash, 'command-id-reused', 409)
       if (prior.state === 'complete') return prior.response
       if (this.#pending.has(key)) return this.#pending.get(key)
+      if (reconcile) {
+        const recovered = await reconcile()
+        if (recovered) {
+          this.store.update(value => { value.commands[key].state = 'complete'; value.commands[key].response = recovered })
+          return recovered
+        }
+      }
       return { status: 409, body: JSON.stringify({ error: 'outcome-unknown', commandId, hostEpoch: this.epoch }), headers: { 'content-type': 'application/json' } }
     }
     // No silent expiry: forgetting a receipt could re-execute an old command.

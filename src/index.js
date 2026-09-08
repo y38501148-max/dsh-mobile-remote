@@ -1,10 +1,16 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { Devices, ProtocolError, check } from './auth/devices.js'
 import { Drafts } from './sync/drafts.js'
 import { StateStore } from './storage/store.js'
 import { Follow } from './sync/follow.js'
 import { sharedOperations } from './gateway/shared.js'
 import { Commands } from './sync/commands.js'
+import { installAdmission } from './sync/admission.js'
+import { Uploads } from './sync/uploads.js'
+import { RelayHost } from './relay/host.js'
+import { Push } from './background/push.js'
+import { KeepAwake } from './background/awake.js'
 import { Gateway, tlsFiles } from './gateway/server.js'
 
 export const name = 'mobile-remote'
@@ -37,9 +43,12 @@ async function body(req) {
 
 export function apply(ctx, config = {}) {
   const hostEpoch = randomUUID(), store = new StateStore(config.statePath)
-  const devices = new Devices({ store }), drafts = new Drafts({ store }), follow = new Follow(), commands = new Commands(store, hostEpoch)
-  const shared = sharedOperations({ drafts, follow, commands, store })
-  let gateway, gatewayChange = Promise.resolve(), disposed = false
+  const uploads = new Uploads(store)
+  const devices = new Devices({ store }), drafts = new Drafts({ store, uploads }), follow = new Follow(), commands = new Commands(store, hostEpoch)
+  const push = new Push(store, devices), awake = new KeepAwake()
+  const shared = sharedOperations({ drafts, follow, commands, store, uploads, push })
+  const admission = installAdmission(ctx, commands)
+  let gateway, relay, gatewayChange = Promise.resolve(), disposed = false
   const changeGateway = action => {
     const operation = gatewayChange.then(action)
     gatewayChange = operation.catch(() => {})
@@ -49,23 +58,31 @@ export function apply(ctx, config = {}) {
     check(!disposed, 'plugin-unloaded', 409)
     check(!gateway, 'already-enabled', 409)
     check(config.statePath, 'persistent-state-required', 409)
-    const candidate = new Gateway({ hostPort: ctx.webServer.port, epoch: hostEpoch, devices, commands, shared, ...tlsFiles(options), publicOrigin: options.publicOrigin, bind: options.bind ?? '127.0.0.1', port: options.port ?? 0 })
+    const candidate = new Gateway({ hostPort: ctx.webServer.port, epoch: hostEpoch, devices, commands, shared, reconcile: admission.reconcile, ...tlsFiles(options), publicOrigin: options.publicOrigin, bind: options.bind ?? '127.0.0.1', port: options.port ?? 0 })
     try { await candidate.start() } catch (error) { await candidate.close(); throw error }
+    if (options.relayUrl) {
+      try {
+        check(typeof options.relayTokenPath === 'string', 'relay-token-file-required')
+        relay = new RelayHost({ url: options.relayUrl, token: readFileSync(options.relayTokenPath, 'utf8').trim(), gatewayPort: candidate.port, ca: options.relayCaPath ? readFileSync(options.relayCaPath) : undefined }).start()
+      } catch (error) { await candidate.close(); throw error }
+    }
     gateway = candidate
+    push.start(ctx.apiProxy)
     store.audit({ type: 'gateway-enabled' })
     return { enabled: true, origin: gateway.origin, port: gateway.port }
   })
   const routes = {
     status: ['GET', () => ({ protocolVersion: 1, hostEpoch, hostPort: ctx.webServer.port,
-      enabled: !!gateway, phase: 'development', persistence: config.statePath ? 'durable' : 'process-only', remoteOrigin: gateway?.origin, remotePort: gateway?.port,
+      enabled: !!gateway, keepAwake: awake.status(), relayState: relay?.state ?? 'disabled', phase: 'development', persistence: config.statePath ? 'durable' : 'process-only', remoteOrigin: gateway?.origin, remotePort: gateway?.port,
       capabilities: { nativeHttp: true, mux: true, hostEvents: true, remoteAccess: !!gateway, pairingCore: true, draftCAS: true } })],
     devices: ['GET', () => ({ devices: devices.list() })],
     'pair/invite': ['POST', () => devices.invite()],
     'pair/claim': ['POST', p => devices.claim(p.code, p.name)],
     'pair/approve': ['POST', p => devices.approve(p.deviceId, p.role)],
-    'devices/revoke': ['POST', p => devices.revoke(p.deviceId)],
+    'devices/revoke': ['POST', p => { const result = devices.revoke(p.deviceId); push.remove(p.deviceId); return result }],
+    'keep-awake/set': ['POST', p => { check(typeof p.enabled === 'boolean', 'invalid-keep-awake'); if (p.enabled) { check(gateway, 'gateway-disabled', 409); return awake.enable() } return awake.disable() }],
     'gateway/enable': ['POST', p => enable(p)],
-    'gateway/disable': ['POST', () => changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined; return { enabled: false } })],
+    'gateway/disable': ['POST', () => changeGateway(async () => { push.close(); awake.disable(); relay?.close(); relay = undefined; if (gateway) await gateway.close(); gateway = undefined; return { enabled: false } })],
     ...Object.fromEntries(Object.entries(shared).map(([path, execute]) => [path, ['POST', p => {
       check(typeof p.clientId === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(p.clientId), 'client-id-required')
       return execute(p, { deviceId: `desktop:${p.clientId}`, role: 'admin' })
@@ -97,8 +114,9 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       for (const dispose of disposers.reverse()) dispose()
       devices.dispose()
+      admission.dispose()
       throw error
     }
-    return () => { disposed = true; devices.dispose(); for (const dispose of disposers.reverse()) dispose(); return changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined }) }
+    return () => { disposed = true; push.close(); awake.disable(); devices.dispose(); admission.dispose(); relay?.close(); for (const dispose of disposers.reverse()) dispose(); return changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined }) }
   }, 'mobile-remote: local management routes')
 }

@@ -14,4 +14,5 @@ jobs:
       - run: npm run test:host
       - run: npm run test:native
       - run: npm run test:gateway
+      - run: npm run test:relay
       - run: npm pack --dry-run
