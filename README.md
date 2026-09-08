@@ -1,6 +1,12 @@
 # DeepSeek Harness Mobile Remote
 
-让手机浏览器/PWA 操作电脑上**同一个 DeepSeek Harness Host**。不需要 Codex 或 OpenAI 账号。
+让手机操作电脑上**同一个 DeepSeek Harness Host**。当前已实现浏览器/PWA 插件；专用安卓客户端正在设计。不需要 Codex 或 OpenAI 账号。
+
+> **仓库里是插件，Release 中是软件。**
+> 本仓库用于安装和开发电脑端 Harness 插件；安卓客户端软件将以签名 APK 发布在 [GitHub Releases](https://github.com/y38501148-max/dsh-mobile-remote/releases)。
+> **目前尚未发布安卓 APK。** GitHub 自动生成的 Source code 压缩包不是手机安装包。
+
+安卓方案采用“安装 APK → 扫码 → 电脑确认”，优先通过域名和公网 IPv6 直连，自动管理 HTTPS；中继为可选路线。详见 [安卓客户端设计](docs/android-client-design.md)，其中列明地址变化、校园网入站限制与真机验收条件。
 
 适配目标：`@deepseek-ai/dsh@0.1.0-rc.6`，Node.js 22+。开发与实验进度见 [验收记录](docs/development-status.md)，原始范围见 [完整计划](docs/mobile-remote-plugin-plan.md)。
 
@@ -15,9 +21,9 @@
 - 主动连接中继，业务 TLS 在电脑终止；通用 Web Push 提醒、macOS 防空闲休眠选项。
 - 已开启的网关在 Host 重启后恢复；设备与草稿持久保存。首次安装默认关闭，显式关闭会取消自动恢复。
 
-## 安装、升级、卸载
+## 电脑端插件：安装、升级、卸载
 
-先取得构建好的 `.tgz`，或在本仓库运行：
+安卓软件请使用上方 Releases 入口；以下命令仅安装电脑端插件。在本仓库构建插件安装包：
 
 ```sh
 npm ci
@@ -43,7 +49,7 @@ dsh plugin --profile web remove @muzermat/dsh-mobile-remote
 
 先在设置中关闭远程入口，再卸载。卸载保留状态文件，方便回滚；若希望撤销所有旧授权，先撤销设备。证书、状态与上传目录不进入 Git 仓库。
 
-## 接入与日常使用
+## 当前浏览器/PWA 版：接入与日常使用
 
 HTTPS 证书必须受手机信任，并匹配填写的公开域名。局域网可以使用可达的私人网络 HTTPS 入口；跨网使用 [中继说明](docs/relay.md)。本轮开发没有部署公网中继，也没有改变系统证书信任设置。
 
