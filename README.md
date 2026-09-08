@@ -1,12 +1,12 @@
 # DeepSeek Harness Mobile Remote
 
-让手机操作电脑上**同一个 DeepSeek Harness Host**。当前已实现浏览器/PWA 插件；专用安卓客户端正在设计。不需要 Codex 或 OpenAI 账号。
+让手机操作电脑上**同一个 DeepSeek Harness Host**。提供电脑插件和安卓客户端。不需要 Codex 或 OpenAI 账号。
 
 > **仓库里是插件，Release 中是软件。**
-> 本仓库用于安装和开发电脑端 Harness 插件；安卓客户端软件将以签名 APK 发布在 [GitHub Releases](https://github.com/y38501148-max/dsh-mobile-remote/releases)。
-> **目前尚未发布安卓 APK。** GitHub 自动生成的 Source code 压缩包不是手机安装包。
+> 本仓库用于安装和开发电脑端 Harness 插件；安卓客户端软件以签名 APK 发布在 [GitHub Releases](https://github.com/y38501148-max/dsh-mobile-remote/releases)。
+> GitHub 自动生成的 Source code 压缩包不是手机安装包；请下载 Release 附件中的 `.apk`。
 
-安卓方案采用“安装 APK → 扫码 → 电脑确认”，优先通过域名和公网 IPv6 直连，自动管理 HTTPS；中继为可选路线。详见 [安卓客户端设计](docs/android-client-design.md)，其中列明地址变化、校园网入站限制与真机验收条件。
+安卓采用“安装 APK → 扫码 → 电脑确认”，直接使用公网 IPv6 地址，扫码固定电脑公钥；无需域名、VPN 或安装证书。详见 [安卓客户端设计](docs/android-client-design.md)，其中列明地址变化、校园网入站限制与真机验收条件。已执行测试和待实测项见 [安卓验收记录](docs/android-validation.md)。
 
 适配目标：`@deepseek-ai/dsh@0.1.0-rc.6`，Node.js 22+。开发与实验进度见 [验收记录](docs/development-status.md)，原始范围见 [完整计划](docs/mobile-remote-plugin-plan.md)。
 
@@ -34,10 +34,10 @@ npm pack
 使用**桌面应用实际使用的 DSH_HOME 和 web profile**执行 Harness 原生命令。原生插件管理需要 PATH 中可用的 pnpm（测试使用 11.19.0）。下面的 `dsh` 应为该应用对应的 rc.6 CLI；不要另启一个业务 Host。
 
 ```sh
-dsh plugin --profile web add /absolute/path/muzermat-dsh-mobile-remote-0.1.0.tgz
+dsh plugin --profile web add /absolute/path/muzermat-dsh-mobile-remote-0.2.0.tgz
 ```
 
-重新加载该 Host 后，在「设置 → 手机远程」填写 HTTPS 地址、证书/私钥路径和监听地址/端口，然后开启。生成二维码，手机扫码后，在电脑选择设备权限。
+重新加载该 Host 后，在「设置 → 手机远程」选择检测到的 IPv6，点击「开启 IPv6 直连」。生成二维码，在安卓 App 中扫描，再到电脑批准设备。电脑自动准备连接身份，普通使用不需要填写证书路径。
 
 升级仍用 `add /absolute/path/new-package.tgz`。升级前关闭远程入口、备份 `$DSH_HOME/mobile-remote/`，并保留旧安装包；回滚时安装旧包。不要同时启动两个使用同一状态目录的 Host。
 
@@ -48,6 +48,16 @@ dsh plugin --profile web remove @muzermat/dsh-mobile-remote
 ```
 
 先在设置中关闭远程入口，再卸载。卸载保留状态文件，方便回滚；若希望撤销所有旧授权，先撤销设备。证书、状态与上传目录不进入 Git 仓库。
+
+## 安卓 App：连接与更新
+
+1. 从本仓库 Releases 下载签名 APK，在 Android 10 或更高版本安装。
+2. 电脑开启 IPv6 直连并生成二维码；App 扫码后请求连接，电脑确认权限。
+3. 以后启动会恢复配对；顶部「提醒」可开启持续任务通知，「电脑」可管理入口或忘记设备。
+
+电脑 IPv6 变化时，在 App「管理 → 修改电脑地址」填写新的 `https://[IPv6]:8443`；App 仍校验原来的公钥。没有域名/发现服务器，不能自动查到电脑新地址。手机网络必须能到达电脑的 IPv6 和端口；模拟器通过不等于校园网允许蜂窝入站。
+
+App 中「检查更新」打开本仓库 Releases。升级由安卓确认，保留同一签名，不卸载即可保留配对。独立源码与构建说明见 [harness-remote-android](https://github.com/y38501148-max/harness-remote-android)。
 
 ## 当前浏览器/PWA 版：接入与日常使用
 

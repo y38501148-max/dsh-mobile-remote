@@ -8,20 +8,23 @@ import { mobileIndex } from './html.js'
 import { PWA_RESOURCES } from './pwa.js'
 import { credentialFrom, failure, jsonBody, parseBody, readBody, reply, sessionCookie } from './http.js'
 import { PLUGIN_ROUTES, PLUGIN_WRITES, quotaView } from '../compat/routes.js'
+import { certificateIdentity } from '../direct/identity.js'
 
 const BOOTSTRAP = readFileSync(new URL('../client/bootstrap.js', import.meta.url), 'utf8').replace('WRITE_METHODS_PLACEHOLDER', JSON.stringify([...WRITE_METHODS, ...ADMIN_METHODS])).replace('PLUGIN_WRITES_PLACEHOLDER', JSON.stringify(PLUGIN_WRITES))
 const PAIR_HTML = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>连接 DeepSeek Harness</title><style>body{font:17px system-ui;background:#f7f8fc;color:#18213a;max-width:440px;margin:10vh auto;padding:24px}input,button{box-sizing:border-box;width:100%;font:inherit;padding:14px;margin:10px 0;border:1px solid #b9c4d5;border-radius:12px}button{background:#345bea;color:white}#status{white-space:pre-wrap}</style><h1>连接你的电脑</h1><p>在电脑端生成邀请，扫码或输入邀请码。随后在电脑确认此设备。</p><form id="pair"><label>设备名称<input id="name" maxlength="80" value="我的手机" required></label><label>邀请码<input id="code" required autocomplete="off"></label><button>请求连接</button></form><p id="status" role="status"></p><script src="/remote/pair.js"></script></html>`
 const PAIR_JS = `const status=document.querySelector('#status');const code=document.querySelector('#code');code.value=new URLSearchParams(location.hash.slice(1)).get('invite')||'';history.replaceState(null,'',location.pathname);let timer;async function poll(){try{const r=await fetch('/remote/session');const v=await r.json();if(r.ok&&v.state==='approved'){location.replace('/');return}if(r.ok){status.textContent='等待电脑确认设备…';timer=setTimeout(poll,1500)}else status.textContent='连接已失效，请在电脑生成新邀请。'}catch{status.textContent='连接中断，正在重试…';timer=setTimeout(poll,3000)}}document.querySelector('#pair').onsubmit=async e=>{e.preventDefault();clearTimeout(timer);try{const r=await fetch('/remote/claim',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:code.value,name:document.querySelector('#name').value})});const v=await r.json();if(!r.ok)throw Error(v.error);code.value='';poll()}catch(e){status.textContent='连接失败：'+e.message}};poll();`
 
 export class Gateway {
-  constructor({ hostPort, epoch, devices, commands, shared = {}, resources, reconcile, cert, key, publicOrigin, bind = '127.0.0.1', port = 0 }) {
+  constructor({ hostPort, epoch, hostId, devices, commands, shared = {}, resources, reconcile, cert, key, publicOrigin, bind = '127.0.0.1', port = 0 }) {
     this.hostPort = hostPort; this.epoch = epoch; this.devices = devices; this.commands = commands; this.shared = shared
     this.reconcile = reconcile
     this.resources = resources
     this.origin = publicOrigin; this.bind = bind; this.port = port
+    this.hostId=hostId; this.identity=certificateIdentity(cert,key); this.tls={cert,key}
     const origin = new URL(publicOrigin)
     check(origin.protocol === 'https:' && origin.origin === publicOrigin && !origin.username && !origin.password, 'https-origin-required')
-    this.server = createServer({ cert, key, minVersion: 'TLSv1.2' }, (req, res) => this.handle(req, res).catch(error => failure(res, error)))
+    this.server = createServer({ cert, key, minVersion: 'TLSv1.2', handshakeTimeout: 10000 }, (req, res) => this.handle(req, res).catch(error => failure(res, error)))
+    this.server.maxConnections = 128
     this.server.requestTimeout = 30_000; this.server.headersTimeout = 10_000
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false })
     this.sockets = new Set(); this.channels = new Set(); this.attempts = new Map()
@@ -31,9 +34,14 @@ export class Gateway {
     })
   }
   async start() {
-    await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.port, this.bind, () => { this.server.off('error', reject); resolve() }) })
+    await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen({port:this.port,host:this.bind,ipv6Only:this.bind.includes(':')}, () => { this.server.off('error', reject); resolve() }) })
     this.port = this.server.address().port
     return { origin: this.origin, port: this.port }
+  }
+  reloadTls({cert,key}) {
+    const identity=certificateIdentity(cert,key)
+    this.server.setSecureContext({cert,key,minVersion:'TLSv1.2'})
+    this.identity=identity; this.tls={cert,key}
   }
   boundary(req, requireOrigin = false) {
     check(req.headers.host === new URL(this.origin).host, 'forbidden-host', 403)
@@ -53,6 +61,7 @@ export class Gateway {
   async handle(req, res) {
     this.boundary(req, !['GET', 'HEAD'].includes(req.method))
     const path = canonicalPath(req.url)
+    if (path === '/remote/info' && req.method === 'GET') { reply(res,200,{hostId:this.hostId,protocolVersion:1,appTransportVersion:1,pluginVersion:'0.2.0'});return }
     if (PWA_RESOURCES.has(path) && req.method === 'GET') {
       const [type, content] = PWA_RESOURCES.get(path)
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'service-worker-allowed': '/', 'x-content-type-options': 'nosniff' }); res.end(content); return

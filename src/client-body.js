@@ -1,4 +1,5 @@
 import React from 'react'
+import { DirectSetup } from './client/direct.js'
 import { SharedQueue } from './client/queue.js'
 import { installReading } from './client/reading.js'
 import QRCode from 'qrcode'
@@ -51,7 +52,8 @@ function Settings({ service }) {
   const call = async (path, args) => { const result = await service.api.call(path, args); if (result.error) throw Error(result.error); return result }
   const invite = () => run(async () => {
     const value = await call('pair/invite', {})
-    const url = `${status.remoteOrigin}/remote/pair#invite=${encodeURIComponent(value.code)}`
+    const fragment = new URLSearchParams({invite:value.code,v:'1',hostId:value.hostId,pin:value.pin,expires:String(value.expiresAt)})
+    const url = `${status.remoteOrigin}/remote/pair#${fragment}`
     setInvitation({ ...value, url }); setQr(await QRCode.toDataURL(url, { width: 240, margin: 2 }))
   })
   const enableNotifications = () => run(async () => {
@@ -69,11 +71,14 @@ function Settings({ service }) {
     h('p', { role: 'status' }, remote ? `已连接 · ${status?.name || ''} · ${status?.role || ''}` : status?.enabled ? `远程入口已开启：${status.remoteOrigin}` : '远程入口已关闭'),
     error && h('p', { className: 'mr-error', role: 'alert' }, error),
     !remote && h(React.Fragment, null,
-      h('p', null, '手机连接当前电脑 Host，共享会话和执行队列。请使用手机可验证的 HTTPS 证书。'),
+      h(DirectSetup, {status,call,run,busy}),
+      h('details',null,h('summary',null,'高级：浏览器 HTTPS / 中继配置'),
+      h('p', null, '以下用于浏览器或已配置的中继；安卓 App 请使用上方 IPv6 直连。'),
       ...[['publicOrigin', 'HTTPS 地址', 'https://your-host.example:8443'], ['certPath', '证书文件路径', '/path/fullchain.pem'], ['keyPath', '私钥文件路径', '/path/privkey.pem'], ['relayUrl', '中继控制地址（可选）', 'wss://relay.example:8443/relay/control'], ['relayTokenPath', '中继令牌文件（可选）', '/path/relay-token']].map(([key, label, placeholder]) => h('label', { key }, label, h('input', { value: config[key] ?? '', placeholder, onChange: e => setConfig({ ...config, [key]: e.target.value }) }))),
       h('label', null, '监听端口', h('input', { type: 'number', value: config.port, min: 1, max: 65535, onChange: e => setConfig({ ...config, port: Number(e.target.value) }) })),
       h('label', null, '连接方式', h('select', { value: config.bind, onChange: e => setConfig({ ...config, bind: e.target.value }) }, h('option', { value: '0.0.0.0' }, '私人网络直连'), h('option', { value: '127.0.0.1' }, '仅本机测试'))),
-      h(Button, { disabled: busy, onClick: () => run(() => call(status?.enabled ? 'gateway/disable' : 'gateway/enable', config)) }, status?.enabled ? '关闭远程入口' : '开启远程入口'),
+      h(Button, { disabled: busy, onClick: () => run(() => call(status?.enabled ? 'gateway/disable' : 'gateway/enable', config)) }, status?.enabled ? '关闭远程入口' : '开启远程入口')),
+      status?.enabled && h(Button,{disabled:busy,onClick:()=>run(()=>call('gateway/disable',{}))},'关闭远程入口'),
       status?.keepAwake?.supported && h(Button, { disabled: busy || !status?.enabled, onClick: () => run(() => call('keep-awake/set', { enabled: !status.keepAwake.enabled })) }, status.keepAwake.enabled ? '关闭防空闲休眠' : '远控期间防止电脑空闲休眠'),
       h(Button, { disabled: busy || !status?.enabled, onClick: invite }, '生成配对二维码'),
       invitation && h('div', null, h('p', null, `邀请有效至 ${new Date(invitation.expiresAt).toLocaleTimeString()}，仅可使用一次。`), h('img', { src: qr, alt: '手机配对二维码', width: 240, height: 240 }), h('input', { readOnly: true, value: invitation.url, 'aria-label': '配对链接' })),
@@ -94,8 +99,8 @@ function Settings({ service }) {
     h('p', null, service.message),
     remote && h(React.Fragment, null,
       h('h3', null, '后台通知'),
-      h('p', null, notifications?.enabled ? '任务结束、审批和提问会发送通用提醒，通知不含会话正文。' : '通知尚未开启。手机后台暂停网页时，可通过系统推送收到任务提醒。'),
-      h(Button, { disabled: busy, onClick: enableNotifications }, '开启此设备通知'),
+      h('p', null, window.__HARNESS_NATIVE__ ? '请使用 App 顶部「提醒」开启持续任务提醒。安卓限制后台时长，返回 App 后会补齐任务状态。' : notifications?.enabled ? '任务结束、审批和提问会发送通用提醒，通知不含会话正文。' : '通知尚未开启。手机后台暂停网页时，可通过系统推送收到任务提醒。'),
+      !window.__HARNESS_NATIVE__ && h(Button, { disabled: busy, onClick: enableNotifications }, '开启此设备通知'),
       notifications?.enabled && h(Button, { disabled: busy, onClick: () => run(async () => { await call('push/unsubscribe'); const registration = await navigator.serviceWorker.ready; await (await registration.pushManager.getSubscription())?.unsubscribe() }) }, '关闭此设备通知')),
     h(CommandReceipts, { service }),
     remote && h(Button, { onClick: async () => { await fetch('/remote/logout', { method: 'POST' }); location.assign('/remote/pair') } }, '退出连接'))

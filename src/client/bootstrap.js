@@ -58,5 +58,5 @@
   const style = document.createElement('style')
   style.textContent = `@media(max-width:700px){body{overscroll-behavior:none}input,textarea,select{font-size:16px!important}button{min-height:36px}body{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}pre{max-width:100%;overflow:auto}img{max-width:100%}}`
   document.head.append(style)
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/remote/sw.js', { scope: '/' }).catch(() => {})
+  if (!window.__HARNESS_NATIVE__ && 'serviceWorker' in navigator) navigator.serviceWorker.register('/remote/sw.js', { scope: '/' }).catch(() => {})
 })()

@@ -15,6 +15,8 @@ import { Resources } from './gateway/resources.js'
 import { QueueCommands } from './sync/queue.js'
 import { Extensions } from './sync/extensions.js'
 import { Gateway, tlsFiles } from './gateway/server.js'
+import { DirectController } from './direct/controller.js'
+import { certificateIdentity } from './direct/identity.js'
 
 export const name = 'mobile-remote'
 export const inject = ['webServer', 'apiProxy']
@@ -46,6 +48,8 @@ async function body(req) {
 
 export async function apply(ctx, config = {}) {
   const hostEpoch = randomUUID(), store = await StateStore.acquire(config.statePath)
+  if (!store.read().hostId) store.update(value => { value.hostId = randomUUID() })
+  const hostId = store.read().hostId
   const uploads = new Uploads(store)
   const devices = new Devices({ store }), drafts = new Drafts({ store, uploads }), follow = new Follow(), commands = new Commands(store, hostEpoch)
   const push = new Push(store, devices), awake = new KeepAwake()
@@ -67,7 +71,7 @@ export async function apply(ctx, config = {}) {
     const native = await ctx.apiProxy.host.describe({ type: 'client-request', rpcId: randomUUID(), method: 'host.describe', payload: {} })
     // rc.6 reports the constant 0.0.1 here; it is not a package-version proof.
     check(native.result.ok && ['prompt', 'history', 'updateQueue', 'list'].every(method => typeof ctx.apiProxy.sessions?.[method] === 'function') && typeof ctx.apiProxy.events?.mux === 'function', 'native-api-not-supported', 409)
-    const candidate = new Gateway({ hostPort: ctx.webServer.port, epoch: hostEpoch, devices, commands, shared, resources, reconcile: admission.reconcile, ...tlsFiles(options), publicOrigin: options.publicOrigin, bind: options.bind ?? '127.0.0.1', port: options.port ?? 0 })
+    const candidate = new Gateway({ hostPort: ctx.webServer.port, epoch: hostEpoch, hostId, devices, commands, shared, resources, reconcile: admission.reconcile, ...tlsFiles(options), publicOrigin: options.publicOrigin, bind: options.bind ?? '127.0.0.1', port: options.port ?? 0 })
     try { await candidate.start() } catch (error) { await candidate.close(); throw error }
     if (options.relayUrl) {
       try {
@@ -83,18 +87,23 @@ export async function apply(ctx, config = {}) {
     catch (error) { push.close(); relay?.close(); relay = undefined; await candidate.close(); gateway = undefined; throw error }
     return { enabled: true, origin: gateway.origin, port: gateway.port }
   })
+  const direct = new DirectController({store,hostId,enable,getGateway:()=>gateway})
   const routes = {
     status: ['GET', () => ({ protocolVersion: 1, adapterTarget: '0.1.0-rc.6', hostEpoch, hostPort: ctx.webServer.port,
+      hostId, pluginVersion: '0.2.0', directError: direct.error, directConfig: store.read().directConfig ?? null,
       enabled: !!gateway, startupError, keepAwake: awake.status(), relayState: relay?.state ?? 'disabled', phase: 'development', persistence: config.statePath ? 'durable' : 'process-only', remoteOrigin: gateway?.origin, remotePort: gateway?.port,
       capabilities: { nativeHttp: true, mux: true, hostEvents: true, remoteAccess: !!gateway, pairingCore: true, draftCAS: true } })],
     devices: ['GET', () => ({ devices: devices.list() })],
-    'pair/invite': ['POST', () => devices.invite()],
+    'pair/invite': ['POST', () => ({ ...devices.invite(), hostId, pin: gateway?.identity?.pin, protocolVersion: 1, origin: gateway?.origin })],
+    'direct/inspect': ['GET', () => direct.inspect()],
+    'direct/enable': ['POST', p => direct.start(p)],
+    'certificate/reload': ['POST', () => { check(gateway,'gateway-disabled',409); const saved=store.read().remoteConfig; const files=tlsFiles(saved); certificateIdentity(files.cert,files.key); gateway.reloadTls(files); return {ok:true} }],
     'pair/claim': ['POST', p => devices.claim(p.code, p.name)],
     'pair/approve': ['POST', p => devices.approve(p.deviceId, p.role)],
     'devices/revoke': ['POST', p => { const result = devices.revoke(p.deviceId); push.remove(p.deviceId); return result }],
     'keep-awake/set': ['POST', async p => { check(typeof p.enabled === 'boolean', 'invalid-keep-awake'); if (p.enabled) { check(gateway, 'gateway-disabled', 409); const result = await awake.enable(); store.update(value => { value.keepAwake = true }); return result } const result = awake.disable(); store.update(value => { value.keepAwake = false }); return result }],
     'gateway/enable': ['POST', p => enable(p)],
-    'gateway/disable': ['POST', () => changeGateway(async () => { store.update(value => { delete value.remoteConfig; value.keepAwake = false }); push.close(); awake.disable(); relay?.close(); relay = undefined; if (gateway) await gateway.close(); gateway = undefined; return { enabled: false } })],
+    'gateway/disable': ['POST', () => { direct.invalidate(); return changeGateway(async () => { store.update(value => { delete value.remoteConfig; delete value.directConfig; value.keepAwake = false }); push.close(); awake.disable(); relay?.close(); relay = undefined; if (gateway) await gateway.close(); gateway = undefined; return { enabled: false } }) }],
     ...Object.fromEntries(Object.entries(shared).map(([path, execute]) => [path, ['POST', p => {
       check(typeof p.clientId === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(p.clientId), 'client-id-required')
       return execute(p, { deviceId: `desktop:${p.clientId}`, role: 'admin' })
@@ -136,11 +145,11 @@ export async function apply(ctx, config = {}) {
       store.close().catch(() => {})
       throw error
     }
-    return () => { disposed = true; resources.close(); push.close(); awake.disable(); devices.dispose(); admission.dispose(); relay?.close(); for (const dispose of disposers.reverse()) dispose(); return changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined; await commands.drain(); await store.close() }) }
+    return () => { disposed = true; direct.close(); resources.close(); push.close(); awake.disable(); devices.dispose(); admission.dispose(); relay?.close(); for (const dispose of disposers.reverse()) dispose(); return changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined; await commands.drain(); await store.close() }) }
   }, 'mobile-remote: local management routes')
   const retained = store.read()
   if (retained.remoteConfig) {
-    try { await enable(retained.remoteConfig); if (retained.keepAwake) await awake.enable() }
+    try { await enable(retained.remoteConfig); if (retained.directConfig) direct.schedule(); if (retained.keepAwake) await awake.enable() }
     catch (error) { startupError = error.message; store.audit({ type: 'gateway-restore-failed' }) }
   }
 }
