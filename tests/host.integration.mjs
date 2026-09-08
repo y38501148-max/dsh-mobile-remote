@@ -34,7 +34,7 @@ test('real rc.6 webServer: two clients share epoch and CAS state, enforce bounda
     assert.equal(spoofed, 403)
     assert.equal((await request('status', {})).status, 405)
     assert.equal((await request('pair/invite', {})).status, 409)
-    const post = (path, payload = {}) => request(path, { hostEpoch: desktop.hostEpoch, ...payload })
+    const post = (path, payload = {}) => request(path, { hostEpoch: desktop.hostEpoch, clientId: 'test-desktop', ...payload })
     const invitation = await (await post('pair/invite')).json()
     const claim = await (await post('pair/claim', { code: invitation.code, name: 'test phone' })).json()
     assert.equal(claim.state, 'pending')

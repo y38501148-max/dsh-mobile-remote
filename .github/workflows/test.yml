@@ -12,4 +12,6 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:host
+      - run: npm run test:native
+      - run: npm run test:gateway
       - run: npm pack --dry-run

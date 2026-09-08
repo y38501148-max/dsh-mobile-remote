@@ -2,7 +2,7 @@
 
 DeepSeek Harness 手机远程控制插件，独立开发仓库。
 
-**当前是仅限本机的开发预览，不能用手机连接，也未实现完整远控。**
+**当前是持续开发版本，完整远控尚未完成。** 已增加 HTTPS 认证网关和原生双端输入集成；最新进度见开发报告。下方早期接口说明将在完整协议稳定后统一更新。
 目标与阶段见 [原始计划](docs/mobile-remote-plugin-plan.md)，实测与后续工作见 [开发报告](docs/development-status.md)。无需 Codex 或 OpenAI 账号。
 
 ## 开发与验证

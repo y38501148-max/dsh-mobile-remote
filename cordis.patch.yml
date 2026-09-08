@@ -1,3 +1,5 @@
 - insert:
     - id: mobile-remote
       name: '@muzermat/dsh-mobile-remote'
+      config:
+        statePath: !!js dshHomePath('mobile-remote', 'state.json')

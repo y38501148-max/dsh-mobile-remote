@@ -13,7 +13,18 @@ export class Devices {
   #invitations = new Map()
   #devices = new Map()
   #sessions = new Map()
-  constructor({ now = Date.now, limit = 32 } = {}) { this.now = now; this.limit = limit }
+  constructor({ now = Date.now, limit = 32, store } = {}) {
+    this.now = now; this.limit = limit; this.store = store
+    for (const device of store?.read().devices ?? []) this.#devices.set(device.deviceId, device)
+    this.#prune()
+  }
+  #save() {
+    try { this.store?.update(value => { value.devices = structuredClone([...this.#devices.values()]) }) }
+    catch (error) {
+      this.#devices = new Map(this.store.read().devices.map(device => [device.deviceId, device]))
+      throw error
+    }
+  }
   #prune() {
     for (const [key, invite] of this.#invitations) if (invite.expiresAt <= this.now()) this.#invitations.delete(key)
     for (const [id, device] of this.#devices) if (device.state === 'pending' && device.expiresAt <= this.now()) this.#devices.delete(id)
@@ -34,22 +45,28 @@ export class Devices {
     this.#invitations.delete(key)
     const deviceId = randomUUID(), credential = secret()
     this.#devices.set(deviceId, { deviceId, name: name.trim(), state: 'pending', expiresAt: invite.expiresAt, hash: digest(credential) })
+    this.#save()
     return { deviceId, credential, state: 'pending' }
   }
-  approve(deviceId) {
+  approve(deviceId, role = 'operator') {
+    check(['viewer', 'operator', 'admin'].includes(role), 'invalid-role')
     this.#prune()
     const device = this.#devices.get(deviceId)
     check(device?.state === 'pending', 'not-pending', 409)
-    device.state = 'approved'
+    device.state = 'approved'; device.role = role
+    this.#save()
     return { deviceId, state: device.state }
   }
-  authenticate(credential) {
+  identify(credential, allowPending = false) {
+    this.#prune()
     check(typeof credential === 'string' && credential.length <= 128, 'unauthorized', 401)
     const hash = digest(credential)
-    const device = [...this.#devices.values()].find(d => d.hash === hash && d.state === 'approved')
+    const device = [...this.#devices.values()].find(d => d.hash === hash && (allowPending || d.state === 'approved'))
     check(device, 'unauthorized', 401)
-    return device.deviceId
+    const { deviceId, name, state, role } = device
+    return { deviceId, name, state, role }
   }
+  authenticate(credential) { return this.identify(credential).deviceId }
   attach(credential, close) {
     const id = this.authenticate(credential)
     const callbacks = this.#sessions.get(id) ?? new Set()
@@ -59,6 +76,7 @@ export class Devices {
   revoke(deviceId) {
     check(this.#devices.has(deviceId), 'unknown-device', 404)
     this.#devices.delete(deviceId)
+    this.#save()
     const callbacks = this.#sessions.get(deviceId) ?? []
     this.#sessions.delete(deviceId)
     for (const close of callbacks) { try { close() } catch {} }
@@ -66,10 +84,10 @@ export class Devices {
   }
   list() {
     this.#prune()
-    return [...this.#devices.values()].map(({ deviceId, name, state }) => ({ deviceId, name, state }))
+    return [...this.#devices.values()].map(({ deviceId, name, state, role }) => ({ deviceId, name, state, role }))
   }
   dispose() {
-    for (const id of this.#devices.keys()) this.revoke(id)
-    this.#invitations.clear()
+    for (const callbacks of this.#sessions.values()) for (const close of callbacks) { try { close() } catch {} }
+    this.#sessions.clear(); this.#devices.clear(); this.#invitations.clear()
   }
 }

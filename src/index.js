@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { Devices, ProtocolError, check } from './auth/devices.js'
 import { Drafts } from './sync/drafts.js'
+import { StateStore } from './storage/store.js'
+import { Follow } from './sync/follow.js'
+import { sharedOperations } from './gateway/shared.js'
+import { Commands } from './sync/commands.js'
+import { Gateway, tlsFiles } from './gateway/server.js'
 
 export const name = 'mobile-remote'
 export const inject = ['webServer', 'apiProxy']
@@ -30,20 +35,41 @@ async function body(req) {
   return value
 }
 
-export function apply(ctx) {
-  const hostEpoch = randomUUID(), devices = new Devices(), drafts = new Drafts()
+export function apply(ctx, config = {}) {
+  const hostEpoch = randomUUID(), store = new StateStore(config.statePath)
+  const devices = new Devices({ store }), drafts = new Drafts({ store }), follow = new Follow(), commands = new Commands(store, hostEpoch)
+  const shared = sharedOperations({ drafts, follow, commands, store })
+  let gateway, gatewayChange = Promise.resolve(), disposed = false
+  const changeGateway = action => {
+    const operation = gatewayChange.then(action)
+    gatewayChange = operation.catch(() => {})
+    return operation
+  }
+  const enable = options => changeGateway(async () => {
+    check(!disposed, 'plugin-unloaded', 409)
+    check(!gateway, 'already-enabled', 409)
+    check(config.statePath, 'persistent-state-required', 409)
+    const candidate = new Gateway({ hostPort: ctx.webServer.port, epoch: hostEpoch, devices, commands, shared, ...tlsFiles(options), publicOrigin: options.publicOrigin, bind: options.bind ?? '127.0.0.1', port: options.port ?? 0 })
+    try { await candidate.start() } catch (error) { await candidate.close(); throw error }
+    gateway = candidate
+    store.audit({ type: 'gateway-enabled' })
+    return { enabled: true, origin: gateway.origin, port: gateway.port }
+  })
   const routes = {
     status: ['GET', () => ({ protocolVersion: 1, hostEpoch, hostPort: ctx.webServer.port,
-      enabled: false, phase: 'P0/P1-foundation', persistence: 'process-only',
-      capabilities: { nativeHttp: true, mux: true, hostEvents: true, remoteAccess: false, pairingCore: true, draftCAS: true } })],
+      enabled: !!gateway, phase: 'development', persistence: config.statePath ? 'durable' : 'process-only', remoteOrigin: gateway?.origin, remotePort: gateway?.port,
+      capabilities: { nativeHttp: true, mux: true, hostEvents: true, remoteAccess: !!gateway, pairingCore: true, draftCAS: true } })],
     devices: ['GET', () => ({ devices: devices.list() })],
     'pair/invite': ['POST', () => devices.invite()],
     'pair/claim': ['POST', p => devices.claim(p.code, p.name)],
-    'pair/approve': ['POST', p => devices.approve(p.deviceId)],
+    'pair/approve': ['POST', p => devices.approve(p.deviceId, p.role)],
     'devices/revoke': ['POST', p => devices.revoke(p.deviceId)],
-    'draft/read': ['POST', p => drafts.read(p.sessionId)],
-    'draft/write': ['POST', p => drafts.write(p)],
-    'draft/clear': ['POST', p => drafts.clear(p.sessionId, p.expectedRevision)],
+    'gateway/enable': ['POST', p => enable(p)],
+    'gateway/disable': ['POST', () => changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined; return { enabled: false } })],
+    ...Object.fromEntries(Object.entries(shared).map(([path, execute]) => [path, ['POST', p => {
+      check(typeof p.clientId === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(p.clientId), 'client-id-required')
+      return execute(p, { deviceId: `desktop:${p.clientId}`, role: 'admin' })
+    }]])),
   }
   ctx.effect(() => {
     const disposers = []
@@ -60,8 +86,8 @@ export function apply(ctx) {
               check(req.method === method, 'method-not-allowed', 405)
               const p = method === 'POST' ? await body(req) : {}
               if (method === 'POST') check(p.hostEpoch === hostEpoch, 'host-epoch-mismatch', 409)
-              const value = execute(p)
-              reply(value?.error === 'revision-conflict' ? 409 : 200, value)
+              const value = await execute(p)
+              reply(value?.ok === false ? 409 : 200, value)
             } catch (error) {
               reply(error instanceof ProtocolError ? error.status : 500, { error: error instanceof ProtocolError ? error.message : 'internal-error' })
             }
@@ -73,6 +99,6 @@ export function apply(ctx) {
       devices.dispose()
       throw error
     }
-    return () => { devices.dispose(); for (const dispose of disposers.reverse()) dispose() }
+    return () => { disposed = true; devices.dispose(); for (const dispose of disposers.reverse()) dispose(); return changeGateway(async () => { if (gateway) await gateway.close(); gateway = undefined }) }
   }, 'mobile-remote: local management routes')
 }
