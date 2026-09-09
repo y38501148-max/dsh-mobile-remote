@@ -10,6 +10,8 @@
 
 适配目标：`@deepseek-ai/dsh@0.1.0-rc.6`，Node.js 22+。开发与实验进度见 [验收记录](docs/development-status.md)，原始范围见 [完整计划](docs/mobile-remote-plugin-plan.md)。
 
+本轮手机导航、界面适配和连接排查见 [手机 UI 与诊断](docs/reference-and-mobile-ui.md)。新版手机界面需要电脑插件 0.2.1。
+
 ## 功能
 
 - HTTPS 配对、电脑确认、只读/任务操作/完整控制三种权限、90 天授权和即时撤销。
@@ -34,7 +36,7 @@ npm pack
 使用**桌面应用实际使用的 DSH_HOME 和 web profile**执行 Harness 原生命令。原生插件管理需要 PATH 中可用的 pnpm（测试使用 11.19.0）。下面的 `dsh` 应为该应用对应的 rc.6 CLI；不要另启一个业务 Host。
 
 ```sh
-dsh plugin --profile web add /absolute/path/muzermat-dsh-mobile-remote-0.2.0.tgz
+dsh plugin --profile web add /absolute/path/muzermat-dsh-mobile-remote-0.2.1.tgz
 ```
 
 重新加载该 Host 后，在「设置 → 手机远程」选择检测到的 IPv6，点击「开启 IPv6 直连」。生成二维码，在安卓 App 中扫描，再到电脑批准设备。电脑自动准备连接身份，普通使用不需要填写证书路径。

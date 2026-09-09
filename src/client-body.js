@@ -1,5 +1,6 @@
 import React from 'react'
 import { DirectSetup } from './client/direct.js'
+import { MobileShell } from './client/mobile-shell.js'
 import { SharedQueue } from './client/queue.js'
 import { installReading } from './client/reading.js'
 import QRCode from 'qrcode'
@@ -99,7 +100,7 @@ function Settings({ service }) {
     h('p', null, service.message),
     remote && h(React.Fragment, null,
       h('h3', null, '后台通知'),
-      h('p', null, window.__HARNESS_NATIVE__ ? '请使用 App 顶部「提醒」开启持续任务提醒。安卓限制后台时长，返回 App 后会补齐任务状态。' : notifications?.enabled ? '任务结束、审批和提问会发送通用提醒，通知不含会话正文。' : '通知尚未开启。手机后台暂停网页时，可通过系统推送收到任务提醒。'),
+      h('p', null, window.__HARNESS_NATIVE__ ? '请在 App 右上角菜单开启「任务提醒」。返回 App 后会补齐任务状态。' : notifications?.enabled ? '任务结束、审批和提问会发送通用提醒，通知不含会话正文。' : '通知尚未开启。手机后台暂停网页时，可通过系统推送收到任务提醒。'),
       !window.__HARNESS_NATIVE__ && h(Button, { disabled: busy, onClick: enableNotifications }, '开启此设备通知'),
       notifications?.enabled && h(Button, { disabled: busy, onClick: () => run(async () => { await call('push/unsubscribe'); const registration = await navigator.serviceWorker.ready; await (await registration.pushManager.getSubscription())?.unsubscribe() }) }, '关闭此设备通知')),
     h(CommandReceipts, { service }),
@@ -122,7 +123,13 @@ function DraftDock({ service, sessionId }) {
       state.remote && h('details', null, h('summary', null, '查看共享草稿'), h('pre', null, state.remote.text))),
     state.conflicts.length > 0 && h('details', null, h('summary', null, `保留的冲突副本（${state.conflicts.length}）`), ...state.conflicts.map(copy => h('div', { key: copy.id }, h('pre', null, copy.text), h(Button, { onClick: () => act(async () => { await client.loadAssets(copy); client.apply(copy); client.dirty = true; client.persist(); client.publish({ status: 'conflict', message: '副本已载入，请接管后同步。' }) }) }, '载入副本'), h(Button, { onClick: () => act(async () => { await service.api.call('draft/resolve', { sessionId, conflictId: copy.id }); await client.refresh() }) }, '删除此副本')))))
 }
-function SharedFilePicker({ service, client, sessionId }) {
+function PhoneAttachments({ service, sessionId }) {
+  useTick(service)
+  React.useEffect(() => { service.ensureClient(sessionId) }, [service, sessionId])
+  const client=service.clients.get(sessionId)
+  return client && service.api.role !== 'viewer' ? h('div',{className:'mr-phone-attachments'},h(SharedFilePicker,{service,client,sessionId,compact:true})) : null
+}
+function SharedFilePicker({ service, client, sessionId, compact = false }) {
   const fileInput = React.useRef(null)
   const importFiles = async files => {
     for (const file of files) {
@@ -142,10 +149,10 @@ function SharedFilePicker({ service, client, sessionId }) {
   const files = client.files?.entries() ?? []
   return h('div', { className: 'mr-files' },
     !client.files?.bridge() && h(React.Fragment, null,
-      h(Button, { onClick: () => fileInput.current.click() }, '添加图片或文本文件'),
+      h(Button, { className:'mr-file-add','aria-label':'添加图片或文本文件', onClick: () => fileInput.current.click() }, compact ? '附件' : '添加图片或文本文件'),
       h('input', { ref: fileInput, type: 'file', multiple: true, accept: 'image/*,.txt,.md,.json,.csv,.tsv,.log,.diff,.patch', hidden: true, onChange: e => { importFiles([...e.target.files]).catch(error => client.notice(error.message)); e.target.value = '' } }),
-      ...files.map(file => h('span', { key: file.id }, file.name, h(Button, { 'aria-label': `移除文件 ${file.name}`, onClick: () => { client.files.replace(files.filter(f => f.id !== file.id)); client.onInput() } }, '移除')))),
-      files.length > 0 && !client.input.state.getSnapshot().draft && h(Button, { onClick: () => {
+      ...(!compact ? files : []).map(file => h('span', { key: file.id }, file.name, h(Button, { 'aria-label': `移除文件 ${file.name}`, onClick: () => { client.files.replace(files.filter(f => f.id !== file.id)); client.onInput() } }, '移除')))),
+      !compact && files.length > 0 && !client.input.state.getSnapshot().draft && h(Button, { onClick: () => {
         const session = service.ctx.sessions.binding(sessionId)?.session
         if (session) service.ctx.conversation.sendSession(session, '', [], 'queue').catch(error => client.notice(error.message))
       } }, '发送文件'))
@@ -273,6 +280,8 @@ export function apply(ctx) {
     return ctx.slots.register({ name: 'conversation.session.header.utilities', id: 'mobile-remote-follow', store, inject: () => ({ service }) }, FollowButton)
   })
   if (remote) {
+    ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name:'conversation.input.left',id:'mobile-phone-attachments',order:10,inject:()=>({service}) },PhoneAttachments))
+    ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'mobile-remote-phone', inject: () => ({ service, DirectoryFlow, Settings }) }, MobileShell))
     ctx.effect(() => installResources(ctx, service), 'mobile-remote: scoped file previews')
     ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'mobile-remote-resource', inject: () => ({ service }) }, ResourcePreview))
   }

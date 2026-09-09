@@ -90,7 +90,7 @@ export async function apply(ctx, config = {}) {
   const direct = new DirectController({store,hostId,enable,getGateway:()=>gateway})
   const routes = {
     status: ['GET', () => ({ protocolVersion: 1, adapterTarget: '0.1.0-rc.6', hostEpoch, hostPort: ctx.webServer.port,
-      hostId, pluginVersion: '0.2.0', directError: direct.error, directConfig: store.read().directConfig ?? null,
+      hostId, pluginVersion: '0.2.1', directError: direct.error, directConfig: store.read().directConfig ?? null,
       enabled: !!gateway, startupError, keepAwake: awake.status(), relayState: relay?.state ?? 'disabled', phase: 'development', persistence: config.statePath ? 'durable' : 'process-only', remoteOrigin: gateway?.origin, remotePort: gateway?.port,
       capabilities: { nativeHttp: true, mux: true, hostEvents: true, remoteAccess: !!gateway, pairingCore: true, draftCAS: true } })],
     devices: ['GET', () => ({ devices: devices.list() })],

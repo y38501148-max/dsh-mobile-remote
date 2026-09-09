@@ -1,6 +1,6 @@
 # Harness Remote 安卓客户端：IPv6 地址直连
 
-实现版本：插件 0.2.0 / Android 0.2.0-preview.1。Android 10 起，target SDK 36。发布前的验证记录见 `android-validation.md`。
+实现版本：插件 0.2.1 / Android 0.2.0-preview.2。Android 10 起，target SDK 36。发布前的验证记录见 `android-validation.md`。
 
 ## 产品与分发
 

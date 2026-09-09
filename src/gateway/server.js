@@ -61,7 +61,7 @@ export class Gateway {
   async handle(req, res) {
     this.boundary(req, !['GET', 'HEAD'].includes(req.method))
     const path = canonicalPath(req.url)
-    if (path === '/remote/info' && req.method === 'GET') { reply(res,200,{hostId:this.hostId,protocolVersion:1,appTransportVersion:1,pluginVersion:'0.2.0'});return }
+    if (path === '/remote/info' && req.method === 'GET') { reply(res,200,{hostId:this.hostId,protocolVersion:1,appTransportVersion:1,pluginVersion:'0.2.1'});return }
     if (PWA_RESOURCES.has(path) && req.method === 'GET') {
       const [type, content] = PWA_RESOURCES.get(path)
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'service-worker-allowed': '/', 'x-content-type-options': 'nosniff' }); res.end(content); return
